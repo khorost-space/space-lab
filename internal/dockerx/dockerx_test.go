@@ -19,6 +19,23 @@ func TestComposeArgsPinFile(t *testing.T) {
 	}
 }
 
+// TestComposePSArgsShowsStoppedContainers: живой прогон уже ловил дефект
+// здесь — StopAndWait сначала останавливает службу, а затем читает её код
+// выхода через «docker compose ps». Без --all «ps» показывает только
+// РАБОТАЮЩИЕ контейнеры, а только что остановленной службы в этом множестве
+// уже нет — вывод всегда пуст, и GracefulShutdown вместо кода выхода видел
+// «docker compose ps: пустой вывод» на каждой проверке, а не изредка.
+func TestComposePSArgsShowsStoppedContainers(t *testing.T) {
+	got := composePSArgs("/проект/.space-lab/docker-compose.yaml", "spacecraft")
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, " --all ") {
+		t.Errorf("нет --all — «ps» не увидит только что остановленную службу: %q", joined)
+	}
+	if !strings.HasSuffix(joined, " spacecraft") {
+		t.Errorf("имя службы потеряно: %q", joined)
+	}
+}
+
 // TestParseDigestTakesBareDigest: доставка платформы уже ловила этот дефект —
 // crane пишет полную ссылку ref@sha256:…, а потребителю нужен голый digest.
 // Тот же класс ошибки здесь дал бы digest_mismatch на каждом сигнале.

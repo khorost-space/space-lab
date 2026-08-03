@@ -54,3 +54,93 @@ jobs:
         run: |
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
           golangci-lint run ./...
+          golangci-lint run --build-tags=e2e ./e2e/...
+
+  # Публикация образа dev-issuer. Compose, который рендерит «space-lab up»,
+  # тянет ghcr.io/khorost-space/space-lab-issuer, а его ещё никто не
+  # публиковал — до первого прохода этого job полигон не поднимется ни у
+  # кого, кроме тех, кто (как e2e ниже) соберёт issuer локально. Job по
+  # образцу job build в world-platform: свой Dockerfile, логин GITHUB_TOKEN,
+  # права packages: write.
+  #
+  # Только push: у GITHUB_TOKEN в PR из форка нет права публиковать пакеты, и
+  # пытаться здесь — заведомый красный job на каждом внешнем PR.
+  image:
+    needs: [check]
+    if: github.event_name == 'push'
+    runs-on: [self-hosted, Linux]
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Pin HOME to runner temp
+        run: echo "HOME=${RUNNER_TEMP}" >> "$GITHUB_ENV"
+
+      - id: meta
+        run: echo "version=$(date -u +%Y%m%d)-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      - name: Build issuer image
+        run: docker build -f Dockerfile.issuer -t space-lab-issuer:${{ steps.meta.outputs.version }} .
+
+      - name: Push to GHCR
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/space-lab-issuer"
+          VERSION="${{ steps.meta.outputs.version }}"
+
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
+            -u "${{ github.actor }}" --password-stdin
+
+          docker tag space-lab-issuer:$VERSION "$IMAGE:$VERSION"
+          docker push "$IMAGE:$VERSION"
+
+          # latest — подвижный тег для space-lab.yaml по умолчанию
+          # (platform.issuer_version: latest, project.Default). Ставится на
+          # main: то же соглашение, что moving=latest для develop у
+          # world-platform, но своего долгоживущего develop у space-lab нет.
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            docker tag space-lab-issuer:$VERSION "$IMAGE:latest"
+            docker push "$IMAGE:latest"
+          fi
+
+          echo "::notice::Опубликован $IMAGE:$VERSION"
+
+  # Сквозная проверка — страж контракта между полигоном и платформой: если
+  # платформа изменит форму heartbeat, путь токена, audience Gateway или
+  # коды его ошибок, красным станет этот job, а не прогон живого студента
+  # (подробности — в комментарии над TestLabRaisesReferenceSpacecraft).
+  #
+  # Тег сборки e2e держит юнит-тесты в job check быстрыми и не требующими
+  # Docker — go test ./... без тега этот пакет не видит вовсе, поэтому
+  # проверка идёт отдельным job, а не шагом check.
+  #
+  # needs: [check] — не [check, image]: сам e2e не читает образ,
+  # опубликованный job'ом image, он собирает dev-issuer локально (см.
+  # issuerLocalTag в e2e/lab_test.go) — тем же приёмом, каким это придётся
+  # делать студенту, пока публикации ещё не было.
+  e2e:
+    needs: [check]
+    runs-on: [self-hosted, Linux]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Pin Go env to runner temp
+        run: |
+          echo "HOME=${RUNNER_TEMP}" >> "$GITHUB_ENV"
+          echo "GOPATH=${RUNNER_TEMP}/go" >> "$GITHUB_ENV"
+          echo "GOBIN=${RUNNER_TEMP}/go/bin" >> "$GITHUB_ENV"
+          echo "GOCACHE=${RUNNER_TEMP}/go-cache" >> "$GITHUB_ENV"
+          echo "GOMODCACHE=${RUNNER_TEMP}/go-modcache" >> "$GITHUB_ENV"
+          echo "${RUNNER_TEMP}/go/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: e2e
+        run: go test -tags e2e ./e2e/ -timeout 15m

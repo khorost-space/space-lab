@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
 	"strings"
@@ -17,6 +18,14 @@ const testObjectID = "019f-объект"
 
 // recordingDeps — заглушка upDeps, пишущая имена вызовов в calls вместо
 // исполнения. Позволяет проверить ПОРЯДОК шагов up без Docker.
+//
+// buildRef и writeComposeRef запоминают АРГУМЕНТЫ, а не только факт вызова:
+// живой прогон уже дважды ловил дефект именно в значении ссылки на реестр
+// (registry:5000 — имя, которое резолвит только embedded DNS compose внутри
+// контейнеров, не демон Docker, пуляющий образ ДО их создания; localhost на
+// Windows резолвится в IPv6 первым, а демон включает в insecure-registries
+// по умолчанию только 127.0.0.0/8, не ::1) — а заглушка, помнящая только
+// «BuildPush вызван», такой откат не ловит вовсе.
 type recordingDeps struct {
 	calls []string
 
@@ -24,6 +33,9 @@ type recordingDeps struct {
 	objectErr error
 	digest    string
 	buildErr  error
+
+	buildRef        string
+	writeComposeRef string
 }
 
 func (d *recordingDeps) ComposeUp(_ context.Context, services []string) error {
@@ -39,16 +51,18 @@ func (d *recordingDeps) CreateObject(_ context.Context, _, _ string) (string, er
 	return d.objectID, nil
 }
 
-func (d *recordingDeps) BuildPush(_ context.Context, _ string) (string, error) {
+func (d *recordingDeps) BuildPush(_ context.Context, ref string) (string, error) {
 	d.calls = append(d.calls, "build-push")
+	d.buildRef = ref
 	if d.buildErr != nil {
 		return "", d.buildErr
 	}
 	return d.digest, nil
 }
 
-func (d *recordingDeps) WriteCompose(_, _, _ string) error {
+func (d *recordingDeps) WriteCompose(_, _, ref string) error {
 	d.calls = append(d.calls, "write-compose")
+	d.writeComposeRef = ref
 	return nil
 }
 
@@ -64,6 +78,7 @@ func TestUpOrdersPhases(t *testing.T) {
 	want := []string{
 		"compose-up:postgres,redis,platform-api,platform-worker",
 		"create-object",
+		"compose-up:registry",
 		"build-push",
 		"write-compose",
 		"compose-up:platform-api",
@@ -92,6 +107,57 @@ func TestUpRestartsPlatformAPIAfterSecondRender(t *testing.T) {
 	phaseTwoIdx := slices.Index(deps.calls, "compose-up:dev-issuer,student-gateway,registry,spacecraft")
 	if phaseTwoIdx == -1 || phaseTwoIdx <= restartIdx {
 		t.Errorf("вторая фаза поднята раньше перезапуска platform-api: %v", deps.calls)
+	}
+}
+
+// TestUpRaisesRegistryBeforeBuildPush: BuildPush пушит образ аппарата в
+// локальный реестр — если реестр не поднят заранее, docker push бьётся о
+// ещё не запущенный контейнер («connection refused») на КАЖДОМ подъёме, а
+// не изредка. Реестр не входит в PhaseOne (платформе он не нужен) и не
+// может ждать PhaseTwo — она поднимается уже после BuildPush.
+func TestUpRaisesRegistryBeforeBuildPush(t *testing.T) {
+	deps := &recordingDeps{objectID: testObjectID, digest: "sha256:" + strings.Repeat("b", 64)}
+	if err := upWith(context.Background(), project.Default("vega-0"), deps, io.Discard); err != nil {
+		t.Fatalf("upWith: %v", err)
+	}
+	registryIdx := slices.Index(deps.calls, "compose-up:registry")
+	buildIdx := slices.Index(deps.calls, "build-push")
+	if registryIdx == -1 || buildIdx == -1 || registryIdx >= buildIdx {
+		t.Errorf("реестр поднят не раньше build-push: %v", deps.calls)
+	}
+}
+
+// TestUpBuildsAndRunsSpacecraftViaLoopbackRegistry: и ссылка, переданная в
+// BuildPush (docker build/push), и ссылка, записанная в compose для запуска
+// (WriteCompose), обязаны указывать на 127.0.0.1:<порт реестра из
+// конфигурации> — тот же адрес, что виден студенту снаружи.
+//
+// Живой прогон уже дважды проваливался здесь по-разному:
+//   - «registry:5000» (имя службы compose) казалось рабочим, но образ тянет
+//     ДЕМОН Docker ещё до того, как контейнер spacecraft создан — а имя
+//     службы резолвит только embedded DNS сети compose, доступный лишь
+//     контейнерам внутри неё: «lookup registry: no such host» на КАЖДОМ
+//     подъёме, не изредка;
+//   - «localhost:<порт>» вместо голого IPv4 иногда уводил docker push в
+//     HTTPS: демон включает в insecure-registries по умолчанию сеть
+//     127.0.0.0/8, но не ::1, а localhost на Windows резолвится в IPv6
+//     первым — с обычным HTTP-реестром попытка HTTPS зависает на
+//     TLS-таймауте, а не падает сразу.
+//
+// Тест обязан падать на любой из двух прежних форм.
+func TestUpBuildsAndRunsSpacecraftViaLoopbackRegistry(t *testing.T) {
+	cfg := project.Default("vega-0")
+	deps := &recordingDeps{objectID: testObjectID, digest: "sha256:" + strings.Repeat("b", 64)}
+	if err := upWith(context.Background(), cfg, deps, io.Discard); err != nil {
+		t.Fatalf("upWith: %v", err)
+	}
+
+	wantHost := fmt.Sprintf("127.0.0.1:%d/", cfg.Ports.Registry)
+	if !strings.HasPrefix(deps.buildRef, wantHost) {
+		t.Errorf("ссылка сборки/пуша = %q, ожидался префикс %q", deps.buildRef, wantHost)
+	}
+	if !strings.HasPrefix(deps.writeComposeRef, wantHost) {
+		t.Errorf("ссылка запуска в compose = %q, ожидался префикс %q", deps.writeComposeRef, wantHost)
 	}
 }
 

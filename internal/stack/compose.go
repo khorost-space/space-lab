@@ -35,7 +35,9 @@ type Params struct {
 	ServiceAccount string
 
 	// SpacecraftImage — полная ссылка, по которой аппарат запускается:
-	// registry:5000/spacecraft@sha256:…
+	// 127.0.0.1:<port>/spacecraft@sha256:… (тот же адрес, что и у
+	// build/push — образ тянет демон Docker, а имя службы compose
+	// «registry» его DNS не резолвит вовсе, только контейнеры сети).
 	SpacecraftImage string
 	// SpacecraftDigest — голый sha256:<64hex>, который аппарат заявляет о
 	// себе в KHOROST_RELEASE_DIGEST. Отдельно от SpacecraftImage: платформа
@@ -60,6 +62,19 @@ var tmpl = template.Must(template.New("compose").Parse(composeTmpl))
 // значении просто не пишутся — тем же приёмом, каким это уже сделано в
 // шаблоне для витрины.
 func Render(p Params) ([]byte, error) {
+	if p.SpacecraftImage == "" {
+		// Первый рендер (первая фаза up) собирается ДО того, как аппарат
+		// хоть раз собран: BuildPush ещё не вызывался, реального
+		// SpacecraftImage взять неоткуда. Пустая строка после «image: » —
+		// невалидный YAML для схемы docker compose (null вместо string,
+		// «services.spacecraft.image must be a string»), и «docker compose
+		// up -d» первой фазы отказывает на разборе ВСЕГО файла — хотя саму
+		// службу spacecraft эта фаза не поднимает и её образ не трогает.
+		// Заглушка никогда не запускается (spacecraft нет в PhaseOne),
+		// второй рендер (WriteCompose после BuildPush) её перезатирает
+		// настоящим digest.
+		p.SpacecraftImage = "spacecraft:not-built-yet"
+	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, p); err != nil {
 		return nil, fmt.Errorf("отрендерить compose: %w", err)

@@ -185,6 +185,34 @@ func TestRenderAllowsEmptyObjectIDForPhaseOne(t *testing.T) {
 	}
 }
 
+// TestRenderFirstPhaseImageIsNonEmptyString: до первой сборки аппарата
+// SpacecraftImage пуст, и «image: » без значения — YAML null, а не строка.
+// Docker compose схему знает строже generic-YAML: «services.spacecraft.image
+// must be a string» — и первая фаза up (которая spacecraft вообще не
+// поднимает) отказывала на разборе всего файла. yaml.Unmarshal в
+// map[string]any эту ошибку не ловит — null там разбирается молча, поэтому
+// проверка ниже читает поле именно как строку.
+func TestRenderFirstPhaseImageIsNonEmptyString(t *testing.T) {
+	p := params()
+	p.ObjectID = ""
+	p.SpacecraftImage = ""
+	raw, err := stack.Render(p)
+	if err != nil {
+		t.Fatalf("Render с пустым SpacecraftImage обязан отработать без ошибки: %v", err)
+	}
+	var doc struct {
+		Services map[string]struct {
+			Image string `yaml:"image"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("сгенерирован невалидный YAML: %v\n%s", err, raw)
+	}
+	if doc.Services["spacecraft"].Image == "" {
+		t.Error("services.spacecraft.image пуст — docker compose откажет схемой ещё до подъёма первой фазы")
+	}
+}
+
 // TestRequireObjectIDForPhaseTwo: команда up вызывает эту проверку
 // непосредственно перед подъёмом второй фазы (dev-issuer, student-gateway,
 // spacecraft) — там пустой ObjectID уже означает дефект, а не нормальный

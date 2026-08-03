@@ -30,6 +30,19 @@ func composeArgs(composeFile string, args ...string) []string {
 	return append([]string{"compose", "-f", composeFile}, args...)
 }
 
+// composePSArgs собирает аргументы «docker compose ps» для StopAndWait.
+//
+// Вынесено из вызова тем же приёмом, что и composeArgs: --all ломается
+// молча. Живой прогон уже ловил дефект здесь — StopAndWait останавливает
+// службу, а ЗАТЕМ читает её код выхода через «ps», но «ps» без --all
+// показывает только РАБОТАЮЩИЕ контейнеры. Только что остановленной службы
+// в этом множестве уже нет — вывод пуст, и GracefulShutdown вместо кода
+// выхода видел «docker compose ps: пустой вывод» на КАЖДОЙ проверке, а не
+// эпизодически.
+func composePSArgs(composeFile, service string) []string {
+	return composeArgs(composeFile, "ps", "--all", "--format", "json", service)
+}
+
 // digestRe ищет голый sha256:<64hex> в выводе docker push.
 var digestRe = regexp.MustCompile(`sha256:[0-9a-f]{64}`)
 
@@ -126,7 +139,7 @@ func StopAndWait(ctx context.Context, dir, service string, timeout time.Duration
 	}
 	elapsed := time.Since(start)
 
-	ps := exec.CommandContext(ctx, "docker", composeArgs(composeFile(dir), "ps", "--format", "json", service)...)
+	ps := exec.CommandContext(ctx, "docker", composePSArgs(composeFile(dir), service)...)
 	var out bytes.Buffer
 	ps.Stdout = &out
 	ps.Stderr = &out

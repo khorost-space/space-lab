@@ -33,14 +33,18 @@ type upDeps interface {
 }
 
 // upWith выполняет подъём стека в фиксированном порядке: сначала платформа
-// (фаза 1), затем объект в мире, затем сборка и публикация образа аппарата,
-// затем перезапись compose с реальным object_id и, наконец, фаза 2
-// (идентичность, Gateway, реестр, сам аппарат).
+// (фаза 1), затем объект в мире, затем локальный реестр образов, затем
+// сборка и публикация образа аппарата в него, затем перезапись compose с
+// реальным object_id и, наконец, фаза 2 (идентичность, Gateway, тот же
+// реестр повторно — идемпотентно — и сам аппарат).
 //
 // Порядок пиннится тестами (TestUpOrdersPhases и соседние), а не
 // комментарием: Gateway читает отображение из конфигурации ПРИ СТАРТЕ, а
 // object_id выдаёт платформа — поднять Gateway раньше значит поднять его с
-// пустым отображением.
+// пустым отображением. Реестр поднимается СВОИМ отдельным шагом до
+// BuildPush по той же причине, что и объект: BuildPush пушит образ именно
+// в него, а реестр в PhaseOne не входит (платформе он не нужен) и не может
+// ждать PhaseTwo — она поднимается уже ПОСЛЕ BuildPush.
 func upWith(ctx context.Context, cfg project.Config, deps upDeps, stdout io.Writer) error {
 	_, _ = fmt.Fprintln(stdout, "Фаза 1: платформа (postgres, redis, platform-api, platform-worker)")
 	if err := deps.ComposeUp(ctx, stack.PhaseOne); err != nil {
@@ -53,20 +57,42 @@ func upWith(ctx context.Context, cfg project.Config, deps upDeps, stdout io.Writ
 		return fmt.Errorf("завести объект: %w", err)
 	}
 
-	// localhost:<port> — снаружи, с машины студента, куда docker build и
-	// docker push обращаются напрямую через опубликованный порт реестра.
-	buildRef := fmt.Sprintf("localhost:%d/spacecraft:local", cfg.Ports.Registry)
+	// Реестр нужен раньше сборки: BuildPush пушит образ аппарата именно
+	// туда. Без этого шага «docker push» бил бы по ещё не поднятому
+	// контейнеру — «connection refused» вместо понятной ошибки об образе,
+	// причём на КАЖДОМ подъёме, а не изредка.
+	_, _ = fmt.Fprintln(stdout, "Поднимаем локальный реестр образов")
+	if err = deps.ComposeUp(ctx, []string{"registry"}); err != nil {
+		return fmt.Errorf("поднять реестр образов: %w", err)
+	}
+
+	// 127.0.0.1:<port>, а не localhost:<port> — снаружи, с машины студента,
+	// куда docker build и docker push обращаются напрямую через
+	// опубликованный порт реестра.
+	//
+	// Не опечатка и не то же самое: демон Docker включает реестр в
+	// insecure-registries по умолчанию только для сети 127.0.0.0/8, а не
+	// для ::1. Если «localhost» на машине резолвится сначала в IPv6
+	// (обычный порядок в Windows), демон решает, что реестр «внешний», и
+	// пытается говорить с ним HTTPS — с обычным HTTP-реестром это
+	// зависает до таймаута на TLS-рукопожатии, а не падает сразу. Голый
+	// IPv4-адрес убирает саму развилку.
+	buildRef := fmt.Sprintf("127.0.0.1:%d/spacecraft:local", cfg.Ports.Registry)
 	_, _ = fmt.Fprintln(stdout, "Собираем и публикуем образ аппарата")
 	digest, err := deps.BuildPush(ctx, buildRef)
 	if err != nil {
 		return fmt.Errorf("собрать и опубликовать образ аппарата: %w", err)
 	}
 
-	// registry:5000 — изнутри сети compose, куда служба spacecraft обращается
-	// по имени соседней службы и её порту ВНУТРИ контейнера, а не по
-	// опубликованному наружу localhost:<port>. Имя хоста и порт различаются
-	// намеренно, это не опечатка.
-	runImage := fmt.Sprintf("registry:5000/spacecraft@%s", digest)
+	// 127.0.0.1:<port> — тот же адрес, что и buildRef, а не «registry:5000»
+	// по имени службы compose. Имя службы резолвится embedded DNS docker
+	// compose только ВНУТРИ контейнеров уже поднятой сети — а образ тянет
+	// сам демон Docker ДО того, как контейнер spacecraft создан, и его
+	// путь пуллинга с DNS-именами проекта compose не пересекается вовсе:
+	// «lookup registry: no such host». Прежняя версия этого комментария
+	// утверждала обратное — то была ошибка, а не решение; digest у образа
+	// один и тот же независимо от того, каким именем его вытянули.
+	runImage := fmt.Sprintf("127.0.0.1:%d/spacecraft@%s", cfg.Ports.Registry, digest)
 	if err := deps.WriteCompose(objectID, digest, runImage); err != nil {
 		return fmt.Errorf("подготовить compose второй фазы: %w", err)
 	}
