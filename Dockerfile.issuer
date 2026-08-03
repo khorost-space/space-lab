@@ -14,11 +14,20 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
       -o /out/issuer \
       ./cmd/space-lab-issuer
 
+# Каталог токена создаётся здесь, а не рассчитывается на docker: у scratch
+# нет /var/run вовсе, и при первом монтировании именованного тома в пустую
+# точку docker создал бы её сам, от демона — то есть root:root. Процесс
+# issuer работает под 65532 и получил бы «permission denied» на первой же
+# записи. Владелец, выставленный в образе, docker скопирует в volume при
+# первом монтировании (copy-up).
+RUN mkdir -p /out/identity && chown 65532:65532 /out/identity
+
 FROM scratch
 
 # Корневые сертификаты не копируются: issuer никуда не ходит, он только
 # отвечает Gateway'ю на discovery, JWKS и пробу.
 COPY --from=build /out/issuer /issuer
+COPY --from=build --chown=65532:65532 /out/identity /var/run/khorost/identity
 
 # Non-root, как и у остальных образов полигона. В scratch нет /etc/passwd,
 # поэтому UID задаётся числом.
