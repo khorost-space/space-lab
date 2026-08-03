@@ -26,7 +26,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runUp(args[1:], stdout, stderr)
 	case "down":
 		return runDown(args[1:], stdout, stderr)
-	case "status", "check":
+	case "status":
+		return runStatus(args[1:], stdout, stderr)
+	case "check":
 		// Ошибка записи в stderr не проверяется: если он уже недоступен,
 		// исправлять это здесь всё равно нечем — код возврата важнее.
 		_, _ = fmt.Fprintf(stderr, "space-lab: команда %q ещё не реализована\n", args[0])
@@ -104,6 +106,27 @@ func runDown(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if err := cmd.Down(context.Background(), dir, *purge, stdout); err != nil {
+		_, _ = fmt.Fprintf(stderr, "space-lab: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// runStatus разбирает флаги «status» (их нет) и запускает cmd.Status в
+// текущем каталоге.
+func runStatus(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	dir, err := os.Getwd()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "space-lab: узнать текущий каталог: %v\n", err)
+		return 1
+	}
+	if err := cmd.Status(context.Background(), dir, stdout); err != nil {
 		_, _ = fmt.Fprintf(stderr, "space-lab: %v\n", err)
 		return 1
 	}
