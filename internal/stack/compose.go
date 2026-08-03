@@ -6,6 +6,7 @@ package stack
 import (
 	"bytes"
 	_ "embed"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -50,11 +51,31 @@ var tmpl = template.Must(template.New("compose").Parse(composeTmpl))
 
 // Render собирает docker-compose.yaml из Params.
 func Render(p Params) ([]byte, error) {
+	if err := validate(p); err != nil {
+		return nil, err
+	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, p); err != nil {
 		return nil, fmt.Errorf("отрендерить compose: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// validate проверяет то, что шаблон молча проглотил бы пустым значением.
+//
+// KHOROST_SHOWCASE_OBJECT_ID в шаблоне защищён условием и просто исчезает
+// при пустом ObjectID, а KHOROST_GATEWAY_BINDINGS подставляет его
+// безусловно — без явной проверки здесь пустой ObjectID дал бы
+// отображение с пустым полем и молчаливый отказ Gateway при первом
+// сигнале, вместо понятной ошибки на этапе генерации.
+func validate(p Params) error {
+	if p.ObjectID == "" {
+		return errors.New(
+			"object_id не задан: службы второй фазы (dev-issuer, student-gateway, " +
+				"spacecraft) не запустятся без него — сначала получите object_id через POST /objects",
+		)
+	}
+	return nil
 }
 
 // Write кладёт docker-compose.yaml в каталог состояния проекта.

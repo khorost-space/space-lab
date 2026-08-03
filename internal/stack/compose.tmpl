@@ -51,9 +51,36 @@ services:
       KHOROST_STAND: local
       KHOROST_DATABASE_URL: postgres://postgres:lab@postgres:5432/khorost?sslmode=disable
       KHOROST_RUNTIME_SIGNAL_THRESHOLD: 60s
+      KHOROST_NATS_URL: nats://nats:4222
+      # Имя своё, не то что на стендах: полигон не должен путать свои
+      # события с чужими, если когда-нибудь окажется в одной сети со стендом.
+      KHOROST_NATS_STREAM: KHOROST_SPACE_LOCAL
+      # Воркер по умолчанию просит три реплики стрима (прод-настройка), а
+      # NATS в полигоне один узел — с тремя репликами создание стрима не
+      # пройдёт. Платформа переменную пока не читает (правка отдельная,
+      # летит следом) — до тех пор строка просто игнорируется, а как
+      # приедет, стек сразу заработает без повторной правки compose.
+      KHOROST_NATS_REPLICAS: 1
     depends_on:
       migrate:
         condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+
+  # Официальный образ, alpine, версия закреплена минорно — не latest: иначе
+  # вчерашний зелёный up сегодня необъясним.
+  nats:
+    image: nats:2.10-alpine
+    # -js включает JetStream: без него воркер не создаст стрим. -m поднимает
+    # HTTP-монитор — на нём и держится проба ниже.
+    command: ["-js", "-m", "8222"]
+    healthcheck:
+      # Проверено фактически (docker run + wget внутри контейнера): в образе
+      # nats:2.10-alpine есть только busybox wget, curl нет. /healthz —
+      # штатный эндпоинт монитора, отвечает {"status":"ok"} после старта.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8222/healthz"]
+      interval: 2s
+      retries: 20
 
   # Тег берётся из Platform.IssuerVersion, а не Platform.Version: issuer
   # собирается из самого space-lab и версионируется отдельным циклом —
@@ -87,7 +114,10 @@ services:
       KHOROST_WORLD_CORE_URL: http://platform-api:8080
       KHOROST_GATEWAY_TOKEN: {{ .GatewayToken }}
       KHOROST_GATEWAY_BINDINGS: http://dev-issuer:8081|{{ .Namespace }}|{{ .ServiceAccount }}|{{ .ObjectID }}|local
-      KHOROST_REDIS_ADDR: redis:6379
+      # Имя переменной — KHOROST_REDIS_URL: loadRedisConfig платформы читает
+      # именно его, KHOROST_REDIS_ADDR она не знает вовсе и откажет в
+      # старте с «настройки Redis не заданы», хотя значение подставлено.
+      KHOROST_REDIS_URL: redis:6379
     ports: ["{{ .Cfg.Ports.Gateway }}:8080"]
     depends_on:
       dev-issuer:
@@ -106,6 +136,13 @@ services:
     volumes:
       - identity:/var/run/khorost/identity:ro
     ports: ["{{ .Cfg.Ports.Health }}:{{ .Cfg.Spacecraft.HealthPort }}"]
+    # Эталонный аппарат читает файл токена при загрузке конфигурации и
+    # падает, если его ещё нет (vega-0/internal/config, Load). Токен в общий
+    # том пишет dev-issuer — без этой зависимости аппарат, стартовавший
+    # первым, отказывает и остаётся лежать без перезапуска.
+    depends_on:
+      dev-issuer:
+        condition: service_healthy
 
 volumes:
   # Права уже решены в Dockerfile.issuer: каталог лежит в образе с
