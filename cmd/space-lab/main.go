@@ -2,9 +2,13 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+
+	"github.com/khorost-space/space-lab/internal/cmd"
 )
 
 // run вынесен из main ради проверяемости: main не принимает аргументы и не
@@ -15,7 +19,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch args[0] {
-	case "init", "up", "status", "check", "down":
+	case "init":
+		return runInit(args[1:], stdout, stderr)
+	case "up", "status", "check", "down":
 		// Ошибка записи в stderr не проверяется: если он уже недоступен,
 		// исправлять это здесь всё равно нечем — код возврата важнее.
 		_, _ = fmt.Fprintf(stderr, "space-lab: команда %q ещё не реализована\n", args[0])
@@ -25,6 +31,36 @@ func run(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
+}
+
+// runInit разбирает флаги «init» и запускает cmd.Init в текущем каталоге.
+//
+// Имя объекта по умолчанию берётся из имени рабочего каталога: студент,
+// который создал каталог vega-0/, не должен ещё раз печатать это имя во
+// флаге.
+func runInit(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	name := fs.String("name", "", "имя объекта в мире (по умолчанию — имя текущего каталога)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	dir, err := os.Getwd()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "space-lab: узнать текущий каталог: %v\n", err)
+		return 1
+	}
+	objectName := *name
+	if objectName == "" {
+		objectName = filepath.Base(dir)
+	}
+
+	if err := cmd.Init(dir, objectName, stdout); err != nil {
+		_, _ = fmt.Fprintf(stderr, "space-lab: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func usage(w io.Writer) {
