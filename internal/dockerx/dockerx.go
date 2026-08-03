@@ -43,6 +43,14 @@ func composePSArgs(composeFile, service string) []string {
 	return composeArgs(composeFile, "ps", "--all", "--format", "json", service)
 }
 
+// composePSAllArgs собирает аргументы «docker compose ps --all» БЕЗ фильтра
+// по имени службы — в отличие от composePSArgs, который читает ровно одну
+// службу для StopAndWait. StackServicesDown обязан увидеть состояние ВСЕГО
+// стека, а не спрашивать по имени каждую службу отдельно.
+func composePSAllArgs(composeFile string) []string {
+	return composeArgs(composeFile, "ps", "--all", "--format", "json")
+}
+
 // digestRe ищет голый sha256:<64hex> в выводе docker push.
 var digestRe = regexp.MustCompile(`sha256:[0-9a-f]{64}`)
 
@@ -120,6 +128,59 @@ func ImageUser(ctx context.Context, ref string) (string, error) {
 // нужная только для кода выхода остановленной службы.
 type composePS struct {
 	ExitCode int `json:"ExitCode"`
+}
+
+// servicePS — минимальная форма вывода `docker compose ps --format json`,
+// нужная StackServicesDown: имя службы и её текущее состояние.
+type servicePS struct {
+	Service string `json:"Service"`
+	State   string `json:"State"`
+}
+
+// parseServicesDown разбирает построчный JSON `docker compose ps --all` и
+// возвращает описание каждой службы НЕ в состоянии running.
+//
+// Вынесено из StackServicesDown тем же приёмом, что parseDigest из
+// BuildPush: разбор вывода — то, что ломается молча и проверяется юнит-тестом
+// без Docker, а сам запуск — только e2e.
+func parseServicesDown(out string) ([]string, error) {
+	var down []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var svc servicePS
+		if err := json.Unmarshal([]byte(line), &svc); err != nil {
+			return nil, fmt.Errorf("разобрать docker compose ps: %w", err)
+		}
+		if svc.State != "running" {
+			down = append(down, fmt.Sprintf("%s (%s)", svc.Service, svc.State))
+		}
+	}
+	return down, nil
+}
+
+// StackServicesDown возвращает описание служб стека, которые не в состоянии
+// running (упавшие, остановленные, застрявшие в restarting), по данным
+// «docker compose ps --all».
+//
+// Список служб стека не передаётся: смотрим на всё, что подняла compose, а
+// не на заранее известный набор имён — иначе служба, про которую вызывающий
+// код забыл явно спросить, могла бы упасть незамеченной. Пустой вывод (стек
+// вообще не поднят) — тоже «всё стоит», а не ошибка: parseServicesDown
+// вернёт пустой список из пустой строки, и вызывающий код должен спросить
+// об этом отдельно (readComposeSpacecraft уже требует «выполните up» на
+// отсутствующем compose-файле).
+func StackServicesDown(ctx context.Context, dir string) ([]string, error) {
+	ps := exec.CommandContext(ctx, "docker", composePSAllArgs(composeFile(dir))...)
+	var out bytes.Buffer
+	ps.Stdout = &out
+	ps.Stderr = &out
+	if err := ps.Run(); err != nil {
+		return nil, fmt.Errorf("docker compose ps: %w: %s", err, out.String())
+	}
+	return parseServicesDown(out.String())
 }
 
 // StopAndWait останавливает службу compose и дожидается кода выхода.

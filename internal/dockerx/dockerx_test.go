@@ -36,6 +36,52 @@ func TestComposePSArgsShowsStoppedContainers(t *testing.T) {
 	}
 }
 
+// TestComposePSAllArgsHasNoServiceFilter: StackServicesDown обязан увидеть
+// ВЕСЬ стек, а не одну службу — composePSArgs здесь не годится, у него
+// последним аргументом всегда имя службы.
+func TestComposePSAllArgsHasNoServiceFilter(t *testing.T) {
+	got := composePSAllArgs("/проект/.space-lab/docker-compose.yaml")
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, " --all ") {
+		t.Errorf("нет --all — «ps» не увидит остановленные службы: %q", joined)
+	}
+	if strings.HasSuffix(joined, "spacecraft") || strings.HasSuffix(joined, "platform-api") {
+		t.Errorf("аргументы содержат фильтр по службе, ожидался весь стек: %q", joined)
+	}
+}
+
+// TestParseServicesDownFindsNonRunning: живой прогон уже терял упавшую
+// службу платформы среди зелёного вывода check — только те строки, где
+// State != running, обязаны попасть в список.
+func TestParseServicesDownFindsNonRunning(t *testing.T) {
+	out := `{"Service":"postgres","State":"running"}
+{"Service":"platform-api","State":"exited"}
+{"Service":"nats","State":"running"}
+`
+	got, err := parseServicesDown(out)
+	if err != nil {
+		t.Fatalf("parseServicesDown: %v", err)
+	}
+	if len(got) != 1 || !strings.Contains(got[0], "platform-api") || !strings.Contains(got[0], "exited") {
+		t.Errorf("упавшие службы = %v, ожидался ровно platform-api (exited)", got)
+	}
+}
+
+// TestParseServicesDownAllRunning: полностью здоровый стек не должен ничего
+// возвращать — иначе check ложно откажется от полностью рабочего полигона.
+func TestParseServicesDownAllRunning(t *testing.T) {
+	out := `{"Service":"postgres","State":"running"}
+{"Service":"redis","State":"running"}
+`
+	got, err := parseServicesDown(out)
+	if err != nil {
+		t.Fatalf("parseServicesDown: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("здоровый стек дал непустой список: %v", got)
+	}
+}
+
 // TestParseDigestTakesBareDigest: доставка платформы уже ловила этот дефект —
 // crane пишет полную ссылку ref@sha256:…, а потребителю нужен голый digest.
 // Тот же класс ошибки здесь дал бы digest_mismatch на каждом сигнале.
