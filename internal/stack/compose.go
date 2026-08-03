@@ -22,6 +22,17 @@ var PhaseOne = []string{"postgres", "redis", "platform-api", "platform-worker"}
 // аппарат — то, что зависит от уже поднятой платформы.
 var PhaseTwo = []string{"dev-issuer", "student-gateway", "registry", "spacecraft"}
 
+// OneShot — службы стека, которые обязаны отработать и ЗАВЕРШИТЬСЯ, а не
+// остаться running: «упала» для них значит «вышла с ненулевым кодом», а не
+// «не в состоянии running» (см. dockerx.StackServicesDown, который сверяет
+// живость по этому списку). Ни PhaseOne, ни PhaseTwo не отмечают службу как
+// одноразовую сами — состав держим отдельным списком в одном месте, а не
+// раскладываем по пакетам, чтобы platform-api/platform-worker (ждут migrate
+// через service_completed_successfully — см. compose.tmpl) и check
+// (dockerx.StackServicesDown) не разъезжались в понимании, кто здесь
+// одноразовый.
+var OneShot = []string{"migrate"}
+
 // Params — данные, которых нет в project.Config, но без которых compose не
 // собрать: они появляются только во время up (object_id, токены, digest
 // собранного образа), а не хранятся в конфигурации проекта.

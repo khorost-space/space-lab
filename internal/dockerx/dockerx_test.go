@@ -83,6 +83,62 @@ func TestParseServicesDownAllRunning(t *testing.T) {
 	}
 }
 
+// TestParseServicesDownOneShotSuccessIsNotDown: находка живого прогона —
+// migrate (stack.OneShot) обязана дойти до State="exited" по замыслу
+// compose.tmpl (platform-api и platform-worker ждут её через
+// service_completed_successfully), и State != "running" здесь НЕ отказ —
+// отказ только у ненулевого ExitCode. До этой правки любой exited валил
+// migrate вместе с реально упавшими службами, и check был красным на КАЖДОМ
+// успешном up.
+func TestParseServicesDownOneShotSuccessIsNotDown(t *testing.T) {
+	out := `{"Service":"postgres","State":"running"}
+{"Service":"migrate","State":"exited","ExitCode":0}
+`
+	got, err := parseServicesDown(out)
+	if err != nil {
+		t.Fatalf("parseServicesDown: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("успешно завершённая migrate зачтена упавшей: %v", got)
+	}
+}
+
+// TestParseServicesDownOneShotFailureIsDown: та же migrate, но с ненулевым
+// кодом выхода, — миграция схемы не накатилась, и это обязано провалить
+// StackServicesDown так же громко, как упавшая долгоживущая служба.
+func TestParseServicesDownOneShotFailureIsDown(t *testing.T) {
+	out := `{"Service":"postgres","State":"running"}
+{"Service":"migrate","State":"exited","ExitCode":1}
+`
+	got, err := parseServicesDown(out)
+	if err != nil {
+		t.Fatalf("parseServicesDown: %v", err)
+	}
+	if len(got) != 1 || !strings.Contains(got[0], "migrate") {
+		t.Errorf("упавшая migrate не замечена: %v", got)
+	}
+}
+
+// TestParseServicesDownLongRunningExitedIsDown: долгоживущая служба (включая
+// spacecraft — его штатную остановку проверяет отдельная check.GracefulShutdown,
+// которая идёт ПОСЛЕ StackServicesDown) обязана остаться под правилом
+// «State != running — отказ», независимо от ExitCode: молча выйти ей нельзя
+// ни при каком коде выхода. Регресс на правку одноразовых служб — до неё
+// это уже было покрыто TestParseServicesDownFindsNonRunning, проверяю явно
+// на spacecraft, чтобы не полагаться на то, что oneShotServices не задел
+// долгоживущие по совпадению.
+func TestParseServicesDownLongRunningExitedIsDown(t *testing.T) {
+	out := `{"Service":"spacecraft","State":"exited","ExitCode":0}
+`
+	got, err := parseServicesDown(out)
+	if err != nil {
+		t.Fatalf("parseServicesDown: %v", err)
+	}
+	if len(got) != 1 || !strings.Contains(got[0], "spacecraft") {
+		t.Errorf("вышедший spacecraft не замечен: %v", got)
+	}
+}
+
 // TestParseServicesDownEmptyOutputMeansStackNotUp: находка после «space-lab
 // down» — compose-файл остаётся на месте, но «docker compose ps --all»
 // возвращает ПУСТОЙ вывод (контейнеров нет вовсе), и старый код читал его как

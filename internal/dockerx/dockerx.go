@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/khorost-space/space-lab/internal/project"
+	"github.com/khorost-space/space-lab/internal/stack"
 )
 
 // composeArgs собирает аргументы docker compose.
@@ -132,11 +133,29 @@ type composePS struct {
 }
 
 // servicePS — минимальная форма вывода `docker compose ps --format json`,
-// нужная StackServicesDown: имя службы и её текущее состояние.
+// нужная StackServicesDown: имя службы, её текущее состояние и код выхода.
+// ExitCode нужен именно здесь, а не только в composePS у StopAndWait: без
+// него одноразовую службу (migrate), успешно отработавшую и вышедшую с 0,
+// нельзя отличить по ЭТОМУ полю от неё же, упавшей с ненулевым кодом, — оба
+// дают State="exited".
 type servicePS struct {
-	Service string `json:"Service"`
-	State   string `json:"State"`
+	Service  string `json:"Service"`
+	State    string `json:"State"`
+	ExitCode int    `json:"ExitCode"`
 }
+
+// oneShotServices — множество имён из stack.OneShot для быстрой проверки
+// «эта служба обязана завершиться, а не остаться running». Вычисляется один
+// раз при инициализации пакета: список одноразовых служб не меняется в
+// рантайме, и на каждый разбор вывода docker compose ps пересобирать map
+// незачем.
+var oneShotServices = func() map[string]bool {
+	m := make(map[string]bool, len(stack.OneShot))
+	for _, name := range stack.OneShot {
+		m[name] = true
+	}
+	return m
+}()
 
 // ErrStackNotUp сигнализирует, что «docker compose ps --all» не вернул ни
 // одной службы, хотя compose-файл проекта существует: значит стек не поднят
@@ -153,8 +172,25 @@ var ErrStackNotUp = errors.New(
 	"стек полигона не поднят: docker compose ps не вернул ни одной службы — выполните «space-lab up»",
 )
 
-// parseServicesDown разбирает построчный JSON `docker compose ps --all` и
-// возвращает описание каждой службы НЕ в состоянии running.
+// parseServicesDown разбирает построчный JSON «docker compose ps --all» и
+// возвращает описание каждой службы, находящейся не в ожидаемом для неё
+// состоянии.
+//
+// Стек полигона состоит из двух родов служб (см. stack.PhaseOne,
+// stack.PhaseTwo и stack.OneShot), и «упала» означает для них РАЗНОЕ:
+//   - для одноразовых (stack.OneShot, сейчас — только migrate): служба
+//     ОБЯЗАНА выйти, State="exited" — это норма, а не отказ. Упавшей
+//     считается только выход с ненулевым ExitCode — сама миграция не
+//     накатилась. State="exited"+ExitCode=0 у неё же — то самое штатное
+//     завершение, ради которого platform-api и platform-worker ждут её
+//     через service_completed_successfully (см. compose.tmpl); до этой
+//     правки State!="running" валило migrate вместе с реально упавшими
+//     службами на КАЖДОМ успешном up — check был красным всегда.
+//   - для всех остальных, включая spacecraft, — по-прежнему
+//     State != "running": долгоживущая служба, вышедшая сама, — отказ вне
+//     зависимости от кода выхода (spacecraft штатно останавливает отдельная
+//     проверка check.GracefulShutdown, которая идёт последней и намеренно
+//     переводит его в exited уже ПОСЛЕ того, как StackServicesDown отработал).
 //
 // Вынесено из StackServicesDown тем же приёмом, что parseDigest из
 // BuildPush: разбор вывода — то, что ломается молча и проверяется юнит-тестом
@@ -174,6 +210,13 @@ func parseServicesDown(out string) ([]string, error) {
 		if err := json.Unmarshal([]byte(line), &svc); err != nil {
 			return nil, fmt.Errorf("разобрать docker compose ps: %w", err)
 		}
+		if oneShotServices[svc.Service] {
+			if svc.State == "exited" && svc.ExitCode == 0 {
+				continue
+			}
+			down = append(down, fmt.Sprintf("%s (%s, код выхода %d)", svc.Service, svc.State, svc.ExitCode))
+			continue
+		}
 		if svc.State != "running" {
 			down = append(down, fmt.Sprintf("%s (%s)", svc.Service, svc.State))
 		}
@@ -181,8 +224,9 @@ func parseServicesDown(out string) ([]string, error) {
 	return down, nil
 }
 
-// StackServicesDown возвращает описание служб стека, которые не в состоянии
-// running (упавшие, остановленные, застрявшие в restarting), по данным
+// StackServicesDown возвращает описание служб стека, находящихся не в
+// ожидаемом для них состоянии (см. parseServicesDown — критерий разный для
+// долгоживущих служб и одноразовых из stack.OneShot), по данным
 // «docker compose ps --all».
 //
 // Список служб стека не передаётся: смотрим на всё, что подняла compose, а
