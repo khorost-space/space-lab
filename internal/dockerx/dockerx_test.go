@@ -1,6 +1,7 @@
 package dockerx
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -79,6 +80,35 @@ func TestParseServicesDownAllRunning(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("здоровый стек дал непустой список: %v", got)
+	}
+}
+
+// TestParseServicesDownEmptyOutputMeansStackNotUp: находка после «space-lab
+// down» — compose-файл остаётся на месте, но «docker compose ps --all»
+// возвращает ПУСТОЙ вывод (контейнеров нет вовсе), и старый код читал его как
+// «упавших служб нет» — check шёл дальше проверять аппарат, которого
+// физически нет, и красным на пробах и сигналах расплачивался студент, а не
+// полигон. Пустой вывод обязан провалиться отдельной ошибкой ДО того, как
+// вызывающий код примет его за пустой список.
+func TestParseServicesDownEmptyOutputMeansStackNotUp(t *testing.T) {
+	_, err := parseServicesDown("")
+	if err == nil {
+		t.Fatal("пустой вывод docker compose ps принят за «упавших служб нет»")
+	}
+	if !errors.Is(err, ErrStackNotUp) {
+		t.Errorf("ошибка = %v, ожидался ErrStackNotUp", err)
+	}
+	if !strings.Contains(err.Error(), "space-lab up") {
+		t.Errorf("сообщение не подсказывает поднять стек: %v", err)
+	}
+}
+
+// TestParseServicesDownWhitespaceOnlyOutputMeansStackNotUp: тот же случай, но
+// вывод не буквально пуст, а состоит из пробелов/переводов строк — trim
+// обязан свести его к тому же диагнозу.
+func TestParseServicesDownWhitespaceOnlyOutputMeansStackNotUp(t *testing.T) {
+	if _, err := parseServicesDown("\n  \n"); !errors.Is(err, ErrStackNotUp) {
+		t.Errorf("ошибка = %v, ожидался ErrStackNotUp", err)
 	}
 }
 

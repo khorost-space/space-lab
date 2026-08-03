@@ -217,7 +217,14 @@ func checkWith(
 
 	results := []check.Result{
 		check.Health(ctx, healthBase),
-		check.SignalAccepted(last, seq),
+		// expectedSignals — тот же порог, которым observe() выше уже
+		// ограничивает верхнюю границу наблюдений («не собирать больше
+		// expectedSignals за окно»); здесь он же становится нижней границей
+		// («не меньше expectedSignals»). Общая константа, а не отдельное
+		// число: при смене observationWindow или cadenceTarget expectedSignals
+		// пересчитывается один раз и обе границы остаются согласованы сами
+		// собой — раздельные числа разъехались бы при первой же правке окна.
+		check.SignalAccepted(last, seq, expectedSignals),
 		check.DigestMatches(last, digest),
 		check.SequenceMonotonic(seq),
 		nonRootResult(ctx, deps, spec.Services.Spacecraft.Image),

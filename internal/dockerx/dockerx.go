@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -137,6 +138,21 @@ type servicePS struct {
 	State   string `json:"State"`
 }
 
+// ErrStackNotUp сигнализирует, что «docker compose ps --all» не вернул ни
+// одной службы, хотя compose-файл проекта существует: значит стек не поднят
+// (не запускали «up» либо запускали «down») — а не «все службы работают».
+//
+// Пустой список []string от parseServicesDown сам по себе неотличим от этого
+// случая: «нет упавших служб» и «служб вообще нет» дают одно и то же nil-
+// значение. Раньше это и было дырой — check.checkWith получал пустой список,
+// читал его как «все службы стека подняты» и шёл дальше проверять аппарат,
+// которого физически нет, а красный результат проб и сигналов списывался на
+// студента. Сигнальная ошибка заставляет вызывающий код отказать так же
+// громко, как при упавшей службе, а не молча продолжить.
+var ErrStackNotUp = errors.New(
+	"стек полигона не поднят: docker compose ps не вернул ни одной службы — выполните «space-lab up»",
+)
+
 // parseServicesDown разбирает построчный JSON `docker compose ps --all` и
 // возвращает описание каждой службы НЕ в состоянии running.
 //
@@ -144,8 +160,12 @@ type servicePS struct {
 // BuildPush: разбор вывода — то, что ломается молча и проверяется юнит-тестом
 // без Docker, а сам запуск — только e2e.
 func parseServicesDown(out string) ([]string, error) {
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" {
+		return nil, ErrStackNotUp
+	}
 	var down []string
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+	for _, line := range strings.Split(trimmed, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -167,11 +187,10 @@ func parseServicesDown(out string) ([]string, error) {
 //
 // Список служб стека не передаётся: смотрим на всё, что подняла compose, а
 // не на заранее известный набор имён — иначе служба, про которую вызывающий
-// код забыл явно спросить, могла бы упасть незамеченной. Пустой вывод (стек
-// вообще не поднят) — тоже «всё стоит», а не ошибка: parseServicesDown
-// вернёт пустой список из пустой строки, и вызывающий код должен спросить
-// об этом отдельно (readComposeSpacecraft уже требует «выполните up» на
-// отсутствующем compose-файле).
+// код забыл явно спросить, могла бы упасть незамеченной. Пустой вывод — уже
+// НЕ трактуется как «всё стоит» (см. ErrStackNotUp): «space-lab down» оставляет
+// compose-файл на месте, но не поднимает ни одного контейнера, и молчаливое
+// «упавших служб нет» в этом случае было бы неправдой.
 func StackServicesDown(ctx context.Context, dir string) ([]string, error) {
 	ps := exec.CommandContext(ctx, "docker", composePSAllArgs(composeFile(dir))...)
 	var out bytes.Buffer

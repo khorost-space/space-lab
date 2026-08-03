@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/khorost-space/space-lab/internal/dockerx"
 	"github.com/khorost-space/space-lab/internal/project"
 	"github.com/khorost-space/space-lab/internal/worldapi"
 )
@@ -249,10 +250,15 @@ func TestCheckWithStopsSpacecraftLast(t *testing.T) {
 	var reqLog []string
 	world, stub := newShowcaseServer(t, []showcaseStep{
 		// Первый шаг — baseline (ДО старта наблюдения): сигналов ещё не
-		// было. Второй появляется уже ВО ВРЕМЯ окна — ровно его и обязан
-		// засчитать observe.
+		// было. Остальные появляются уже ВО ВРЕМЯ окна — их и обязан
+		// засчитать observe. Три сигнала, а не один: SignalAccepted теперь
+		// требует не менее expectedSignals (3) за окно, и с одним эта проверка
+		// сама проваливалась бы, маскируя то, что тест на самом деле проверяет
+		// (порядок вызовов, а не SignalAccepted).
 		{Condition: "unknown"},
 		{Condition: conditionOnline, Sequence: 1, Signal: true, ServedVersion: strings.Repeat("a", 12)},
+		{Condition: conditionOnline, Sequence: 2, Signal: true, ServedVersion: strings.Repeat("a", 12)},
+		{Condition: conditionOnline, Sequence: 3, Signal: true, ServedVersion: strings.Repeat("a", 12)},
 	})
 	stub.reqLog = &reqLog
 	stub.reqName = "showcase"
@@ -327,6 +333,31 @@ func TestCheckWithFailsLoudlyWhenStackServiceIsDown(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "platform-api") {
 		t.Errorf("виновная служба не названа: %v", err)
+	}
+	if len(calls) != 1 || calls[0] != "stack-services-down" {
+		t.Errorf("check пошёл дальше StackServicesDown: %v", calls)
+	}
+}
+
+// TestCheckWithFailsLoudlyWhenStackIsNotUp: находка после «space-lab down» —
+// compose-файл остаётся, но docker compose ps ничего не возвращает
+// (dockerx.StackServicesDown отвечает dockerx.ErrStackNotUp вместо пустого
+// списка, см. dockerx_test.go). checkWith обязан оборвать проверку тут же,
+// как и при явно упавшей службе (TestCheckWithFailsLoudlyWhenStackServiceIsDown),
+// а не пойти дальше опрашивать витрину и пробы аппарата, которого нет.
+func TestCheckWithFailsLoudlyWhenStackIsNotUp(t *testing.T) {
+	var calls []string
+	deps := &fakeCheckDeps{calls: &calls, downErr: dockerx.ErrStackNotUp}
+
+	// Витрина намеренно не поднята (nil-клиент вызвал бы панику при
+	// обращении) — StackServicesDown обязан оборвать checkWith раньше, чем
+	// он вообще дойдёт до observe.
+	err := checkWith(context.Background(), composeSpacecraft{}, "", nil, "", deps, discardWriter{})
+	if err == nil {
+		t.Fatal("неподнятый стек не провалил check")
+	}
+	if !strings.Contains(err.Error(), "space-lab up") {
+		t.Errorf("отказ не подсказывает поднять стек: %v", err)
 	}
 	if len(calls) != 1 || calls[0] != "stack-services-down" {
 		t.Errorf("check пошёл дальше StackServicesDown: %v", calls)

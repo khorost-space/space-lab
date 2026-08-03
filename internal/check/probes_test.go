@@ -11,6 +11,10 @@ import (
 	"github.com/khorost-space/space-lab/internal/worldapi"
 )
 
+// conditionOnline — литерал витрины, повторяющийся в нескольких тестах:
+// goconst иначе просит вынести его в константу.
+const conditionOnline = "online"
+
 // TestDigestMatchesComparesShortForm: витрина отдаёт первые 12 символов
 // digest без префикса алгоритма — полный наружу не отдаётся. Сравнивать надо
 // ровно то, что доступно, и назвать это в тексте результата.
@@ -41,14 +45,31 @@ func TestDigestMismatchIsStudentFailure(t *testing.T) {
 func TestSignalAcceptedRequiresSignalsInWindow(t *testing.T) {
 	// Витрина всё ещё "online" от старого сигнала, но за окно наблюдения
 	// ничего не пришло — ровно сценарий замолчавшего аппарата.
-	if check.SignalAccepted(worldapi.View{Condition: "online", LastSequence: 3}, nil).Passed {
+	if check.SignalAccepted(worldapi.View{Condition: conditionOnline, LastSequence: 3}, nil, 3).Passed {
 		t.Error("пустое окно наблюдения зачтено по condition=online")
 	}
-	if check.SignalAccepted(worldapi.View{Condition: "unknown"}, nil).Passed {
+	if check.SignalAccepted(worldapi.View{Condition: "unknown"}, nil, 3).Passed {
 		t.Error("отсутствие сигналов зачтено")
 	}
-	if !check.SignalAccepted(worldapi.View{Condition: "online", LastSequence: 3}, []int64{3}).Passed {
-		t.Error("сигнал, увиденный за окно наблюдения, не зачтён")
+	if !check.SignalAccepted(worldapi.View{Condition: conditionOnline, LastSequence: 3}, []int64{1, 2, 3}, 3).Passed {
+		t.Error("три сигнала за окно наблюдения при пороге 3 не зачтены")
+	}
+}
+
+// TestSignalAcceptedFailsOnSingleSignalBelowMin: находка — аппарат, приславший
+// РОВНО ОДИН сигнал за окно наблюдения и зависший, обязан провалить проверку,
+// а не пройти её по принципу «хотя бы один». При рабочей каденции 15 с за
+// 45-секундное окно ожидается около трёх сигналов (min=3, как реально
+// передаёт cmd.Check через expectedSignals) — один сигнал ниже этого порога
+// центральная сборка засчитывает как отказ, и локальный check обязан
+// расходиться с ней ровно так же, как ADR-0020 требует для guaranteed-класса.
+func TestSignalAcceptedFailsOnSingleSignalBelowMin(t *testing.T) {
+	got := check.SignalAccepted(worldapi.View{Condition: conditionOnline, LastSequence: 1}, []int64{1}, 3)
+	if got.Passed {
+		t.Errorf("один сигнал за окно наблюдения при пороге 3 зачтён пройденным: %+v", got)
+	}
+	if got.Class != check.Guaranteed {
+		t.Errorf("класс = %q, ожидался guaranteed", got.Class)
 	}
 }
 
