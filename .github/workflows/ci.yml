@@ -9,7 +9,17 @@ permissions:
   contents: read
 
 jobs:
+  # Условие ниже — не формальность и не лишний шум: раннер self-hosted
+  # принадлежит организации, а «pull_request» без ограничений запускает job
+  # на ЛЮБОЙ PR, включая форк постороннего автора. e2e к тому же СОБИРАЕТ
+  # docker-образ из кода PR и запускает его — это исполнение кода форка на
+  # машине организации без вратаря. Условие пропускает self-hosted job для
+  # pull_request, чей head-репозиторий не совпадает с этим репозиторием (то
+  # есть форк); PR из веток самого репозитория и push продолжают идти как
+  # раньше. Снимать это условие как «лишнее» нельзя — тогда следующий же
+  # форк-PR получит произвольное исполнение на раннере организации.
   check:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Linux]
 
     steps:
@@ -121,7 +131,12 @@ jobs:
   # опубликованный job'ом image, он собирает dev-issuer локально (см.
   # issuerLocalTag в e2e/lab_test.go) — тем же приёмом, каким это придётся
   # делать студенту, пока публикации ещё не было.
+  # То же условие, что у job check, и по той же причине — форк-PR не должен
+  # исполнять свой код на self-hosted раннере организации. Здесь это особенно
+  # важно: e2e собирает docker-образ из кода PR и запускает его, а не просто
+  # читает исходники.
   e2e:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [check]
     runs-on: [self-hosted, Linux]
 
