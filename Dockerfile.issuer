@@ -1,0 +1,27 @@
+# Многоступенчатая сборка issuer'а: в образ едет только статический
+# бинарник, без компилятора и исходников. Тот же приём, что у vega-0/Dockerfile.
+
+ARG GO_VERSION=1.26
+
+FROM golang:${GO_VERSION}-alpine AS build
+
+WORKDIR /src
+
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -o /out/issuer \
+      ./cmd/space-lab-issuer
+
+FROM scratch
+
+# Корневые сертификаты не копируются: issuer никуда не ходит, он только
+# отвечает Gateway'ю на discovery, JWKS и пробу.
+COPY --from=build /out/issuer /issuer
+
+# Non-root, как и у остальных образов полигона. В scratch нет /etc/passwd,
+# поэтому UID задаётся числом.
+USER 65532:65532
+
+ENTRYPOINT ["/issuer"]
