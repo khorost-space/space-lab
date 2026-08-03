@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -187,5 +189,38 @@ func TestUpStopsOnBuildFailure(t *testing.T) {
 	}
 	if slices.Contains(deps.calls, "compose-up:dev-issuer,student-gateway,registry,spacecraft") {
 		t.Error("вторая фаза поднята после отказа сборки")
+	}
+}
+
+// TestUpNamesMissingDockerfile: шаблон аппарата поставляется без Dockerfile
+// намеренно — многоступенчатая сборка и non-root входят в приёмку работы 1.
+// Значит первый up каждого студента упирается ровно сюда, и сообщение обязано
+// называть файл и то, что его надо написать, а не пересказывать ошибку docker.
+func TestUpNamesMissingDockerfile(t *testing.T) {
+	dir := t.TempDir()
+	cfg := project.Default("vega-0")
+
+	err := checkDockerfile(dir, cfg)
+	if err == nil {
+		t.Fatal("отсутствующий Dockerfile принят без ошибки")
+	}
+	got := err.Error()
+	for _, want := range []string{cfg.Spacecraft.Dockerfile, "напишите"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("сообщение %q не содержит %q", got, want)
+		}
+	}
+}
+
+// TestCheckDockerfileAcceptsExisting: существующий файл проверку проходит.
+func TestCheckDockerfileAcceptsExisting(t *testing.T) {
+	dir := t.TempDir()
+	cfg := project.Default("vega-0")
+	path := filepath.Join(dir, cfg.Spacecraft.Context, cfg.Spacecraft.Dockerfile)
+	if err := os.WriteFile(path, []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatalf("подготовить Dockerfile: %v", err)
+	}
+	if err := checkDockerfile(dir, cfg); err != nil {
+		t.Errorf("существующий Dockerfile отвергнут: %v", err)
 	}
 }

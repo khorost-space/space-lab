@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/khorost-space/space-lab/internal/dockerx"
@@ -176,7 +178,33 @@ func (d *liveUpDeps) CreateObject(ctx context.Context, name, owner string) (stri
 }
 
 func (d *liveUpDeps) BuildPush(ctx context.Context, ref string) (string, error) {
+	if err := checkDockerfile(d.dir, d.cfg); err != nil {
+		return "", err
+	}
 	return dockerx.BuildPush(ctx, d.cfg.Spacecraft.Context, d.cfg.Spacecraft.Dockerfile, ref)
+}
+
+// checkDockerfile проверяет, что файл сборки на месте, ДО запуска docker.
+//
+// Шаблон аппарата (khorost-space/spacecraft-template) поставляется без
+// Dockerfile намеренно: многоступенчатая сборка и запуск не от root
+// перечислены в приёмке работы 1, и дать их значило бы подарить требование.
+// Поэтому первый up у КАЖДОГО студента упирается сюда, и сообщение обязано
+// назвать файл и следующий шаг. Сырая ошибка docker («failed to read
+// dockerfile») этого не говорит, а лезть за объяснением в исходники полигона
+// студенту не с чем.
+func checkDockerfile(dir string, cfg project.Config) error {
+	path := filepath.Join(dir, cfg.Spacecraft.Context, cfg.Spacecraft.Dockerfile)
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf(
+				"%s не найден: образ аппарата собирать не из чего — напишите %s "+
+					"(многоступенчатая сборка, запуск не от root)",
+				cfg.Spacecraft.Dockerfile, cfg.Spacecraft.Dockerfile)
+		}
+		return fmt.Errorf("прочитать %s: %w", cfg.Spacecraft.Dockerfile, err)
+	}
+	return nil
 }
 
 // WriteCompose перерендеривает compose с реальным object_id и проверяет, что
