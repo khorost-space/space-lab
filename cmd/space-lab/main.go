@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -21,7 +22,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "init":
 		return runInit(args[1:], stdout, stderr)
-	case "up", "status", "check", "down":
+	case "up":
+		return runUp(args[1:], stdout, stderr)
+	case "down":
+		return runDown(args[1:], stdout, stderr)
+	case "status", "check":
 		// Ошибка записи в stderr не проверяется: если он уже недоступен,
 		// исправлять это здесь всё равно нечем — код возврата важнее.
 		_, _ = fmt.Fprintf(stderr, "space-lab: команда %q ещё не реализована\n", args[0])
@@ -57,6 +62,48 @@ func runInit(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if err := cmd.Init(dir, objectName, stdout); err != nil {
+		_, _ = fmt.Fprintf(stderr, "space-lab: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// runUp разбирает флаги «up» (их нет) и запускает cmd.Up в текущем каталоге.
+func runUp(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("up", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	dir, err := os.Getwd()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "space-lab: узнать текущий каталог: %v\n", err)
+		return 1
+	}
+	if err := cmd.Up(context.Background(), dir, stdout); err != nil {
+		_, _ = fmt.Fprintf(stderr, "space-lab: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// runDown разбирает флаги «down» (-purge) и запускает cmd.Down в текущем
+// каталоге.
+func runDown(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("down", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	purge := fs.Bool("purge", false, "удалить и тома (identity, postgres) — без него данные переживают down")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	dir, err := os.Getwd()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "space-lab: узнать текущий каталог: %v\n", err)
+		return 1
+	}
+	if err := cmd.Down(context.Background(), dir, *purge, stdout); err != nil {
 		_, _ = fmt.Fprintf(stderr, "space-lab: %v\n", err)
 		return 1
 	}
