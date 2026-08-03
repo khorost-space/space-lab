@@ -71,6 +71,18 @@ func upWith(ctx context.Context, cfg project.Config, deps upDeps, stdout io.Writ
 		return fmt.Errorf("подготовить compose второй фазы: %w", err)
 	}
 
+	// platform-api поднят ещё первой фазой, но второй рендер дописал ему
+	// KHOROST_SHOWCASE_OBJECT_ID — без витрины, которую эта переменная
+	// монтирует, status и check читать нечего. compose up -d пересоздаёт
+	// только службы с изменившейся секцией, поэтому лишнего перезапуска это
+	// не даёт, но подхватить новую конфигурацию без этого шага он не может:
+	// docker compose up -d на второй фазе службу platform-api вообще не
+	// трогает, её нет в списке PhaseTwo.
+	_, _ = fmt.Fprintln(stdout, "Перечитываем platform-api: витрина указывает на объект")
+	if err := deps.ComposeUp(ctx, []string{"platform-api"}); err != nil {
+		return fmt.Errorf("перезапустить platform-api с витриной: %w", err)
+	}
+
 	_, _ = fmt.Fprintln(stdout, "Фаза 2: идентичность, Gateway, реестр, аппарат")
 	if err := deps.ComposeUp(ctx, stack.PhaseTwo); err != nil {
 		return fmt.Errorf("поднять вторую фазу: %w", err)

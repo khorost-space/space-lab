@@ -11,6 +11,10 @@ import (
 	"github.com/khorost-space/space-lab/internal/project"
 )
 
+// testObjectID — фиктивный object_id, повторяющийся в нескольких тестах:
+// goconst иначе просит вынести литерал в константу.
+const testObjectID = "019f-объект"
+
 // recordingDeps — заглушка upDeps, пишущая имена вызовов в calls вместо
 // исполнения. Позволяет проверить ПОРЯДОК шагов up без Docker.
 type recordingDeps struct {
@@ -53,7 +57,7 @@ func (d *recordingDeps) WriteCompose(_, _, _ string) error {
 // выдаёт платформа — поднять его раньше значит поднять с пустым отображением
 // и получать «отображение не найдено» на каждом сигнале.
 func TestUpOrdersPhases(t *testing.T) {
-	deps := &recordingDeps{objectID: "019f-объект", digest: "sha256:" + strings.Repeat("b", 64)}
+	deps := &recordingDeps{objectID: testObjectID, digest: "sha256:" + strings.Repeat("b", 64)}
 	if err := upWith(context.Background(), project.Default("vega-0"), deps, io.Discard); err != nil {
 		t.Fatalf("upWith: %v", err)
 	}
@@ -62,10 +66,32 @@ func TestUpOrdersPhases(t *testing.T) {
 		"create-object",
 		"build-push",
 		"write-compose",
+		"compose-up:platform-api",
 		"compose-up:dev-issuer,student-gateway,registry,spacecraft",
 	}
 	if !slices.Equal(deps.calls, want) {
 		t.Errorf("порядок шагов:\n получено %v\n ожидалось %v", deps.calls, want)
+	}
+}
+
+// TestUpRestartsPlatformAPIAfterSecondRender: второй рендер дописывает
+// platform-api KHOROST_SHOWCASE_OBJECT_ID, а сама служба поднята ещё первой
+// фазой — docker compose up -d на второй фазе её не трогает, её нет в
+// PhaseTwo. Без повторного up платформа так и останется без витрины, и
+// status/check не заработают никогда.
+func TestUpRestartsPlatformAPIAfterSecondRender(t *testing.T) {
+	deps := &recordingDeps{objectID: testObjectID, digest: "sha256:" + strings.Repeat("b", 64)}
+	if err := upWith(context.Background(), project.Default("vega-0"), deps, io.Discard); err != nil {
+		t.Fatalf("upWith: %v", err)
+	}
+	writeIdx := slices.Index(deps.calls, "write-compose")
+	restartIdx := slices.Index(deps.calls, "compose-up:platform-api")
+	if writeIdx == -1 || restartIdx == -1 || restartIdx <= writeIdx {
+		t.Errorf("platform-api не перезапущен после второго рендера: %v", deps.calls)
+	}
+	phaseTwoIdx := slices.Index(deps.calls, "compose-up:dev-issuer,student-gateway,registry,spacecraft")
+	if phaseTwoIdx == -1 || phaseTwoIdx <= restartIdx {
+		t.Errorf("вторая фаза поднята раньше перезапуска platform-api: %v", deps.calls)
 	}
 }
 
@@ -85,7 +111,7 @@ func TestUpStopsOnObjectFailure(t *testing.T) {
 // TestUpStopsOnBuildFailure: сборка/пуш аппарата провалились — вторая фаза
 // не поднимается: объект уже заведён, но образа для запуска нет.
 func TestUpStopsOnBuildFailure(t *testing.T) {
-	deps := &recordingDeps{objectID: "019f-объект", buildErr: errors.New("docker build: не вышло")}
+	deps := &recordingDeps{objectID: testObjectID, buildErr: errors.New("docker build: не вышло")}
 	err := upWith(context.Background(), project.Default("vega-0"), deps, io.Discard)
 	if err == nil {
 		t.Fatal("отказ сборки не остановил подъём")

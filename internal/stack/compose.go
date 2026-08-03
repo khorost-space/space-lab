@@ -80,7 +80,7 @@ func Render(p Params) ([]byte, error) {
 func RequireObjectIDForPhaseTwo(p Params) error {
 	if p.ObjectID == "" {
 		return errors.New(
-			"object_id не задан: службы второй фазы (dev-issuer, student-gateway, " +
+			"object_id не задан: службы второй фазы (dev-issuer, student-gateway, registry, " +
 				"spacecraft) не запустятся без него — сначала получите object_id через POST /objects",
 		)
 	}

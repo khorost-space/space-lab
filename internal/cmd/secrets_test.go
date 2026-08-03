@@ -3,6 +3,7 @@ package cmd_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -35,7 +36,18 @@ func TestSecretsAreStableAcrossCalls(t *testing.T) {
 }
 
 // TestSecretsFileIsNotWorldReadable: в файле лежат оба токена.
+//
+// На Windows содержательная часть пропускается: NTFS не исполняет POSIX-биты
+// доступа, os.WriteFile(0o600) там не сужает права так же, как на Linux, и
+// info.Mode().Perm() возвращает не то, что проверяет этот тест. Разработка
+// ведётся с Windows, а CI — Linux (.github/workflows: runs-on Linux); там
+// проверка идёт по прямому назначению. Красный без возможности когда-либо
+// стать зелёным на машине разработчика — это шум, а не сигнал, поэтому
+// смысл теста сохраняется только для POSIX.
 func TestSecretsFileIsNotWorldReadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("права POSIX не действуют на NTFS; проверяется в CI на Linux")
+	}
 	dir := t.TempDir()
 	if _, err := project.Init(dir, "vega-0"); err != nil {
 		t.Fatalf("Init: %v", err)
