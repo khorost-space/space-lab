@@ -34,14 +34,21 @@ func TestDigestMismatchIsStudentFailure(t *testing.T) {
 	}
 }
 
-// TestSignalAcceptedRequiresOnline: unknown означает, что сигналов не было
-// вовсе, и это провал, а не «пока не знаем».
-func TestSignalAcceptedRequiresOnline(t *testing.T) {
-	if check.SignalAccepted(worldapi.View{Condition: "unknown"}).Passed {
+// TestSignalAcceptedRequiresSignalsInWindow: аппарат, приславший один
+// heartbeat и зависший ДО старта наблюдения, оставляет condition="online"
+// сколь угодно долго (порог сноса — минута) — судить нужно по сигналам,
+// увиденным ЗА ОКНО наблюдения (seq), а не по текущему снимку витрины.
+func TestSignalAcceptedRequiresSignalsInWindow(t *testing.T) {
+	// Витрина всё ещё "online" от старого сигнала, но за окно наблюдения
+	// ничего не пришло — ровно сценарий замолчавшего аппарата.
+	if check.SignalAccepted(worldapi.View{Condition: "online", LastSequence: 3}, nil).Passed {
+		t.Error("пустое окно наблюдения зачтено по condition=online")
+	}
+	if check.SignalAccepted(worldapi.View{Condition: "unknown"}, nil).Passed {
 		t.Error("отсутствие сигналов зачтено")
 	}
-	if !check.SignalAccepted(worldapi.View{Condition: "online", LastSequence: 3}).Passed {
-		t.Error("online не зачтён")
+	if !check.SignalAccepted(worldapi.View{Condition: "online", LastSequence: 3}, []int64{3}).Passed {
+		t.Error("сигнал, увиденный за окно наблюдения, не зачтён")
 	}
 }
 
@@ -53,6 +60,25 @@ func TestSequenceMonotonic(t *testing.T) {
 	}
 	if check.SequenceMonotonic([]int64{3, 2}).Passed {
 		t.Error("убывающая последовательность зачтена")
+	}
+}
+
+// TestSequenceMonotonicSkipsOnFewerThanTwoObservations: аппарат, приславший
+// один сигнал за окно наблюдения и замолчавший, не должен получать «✓» по
+// монотонности — судить попросту не из чего. Skip, а не Passed=true и не
+// провал (см. комментарий у SequenceMonotonic).
+func TestSequenceMonotonicSkipsOnFewerThanTwoObservations(t *testing.T) {
+	for _, seq := range [][]int64{nil, {1}} {
+		got := check.SequenceMonotonic(seq)
+		if !got.Skipped {
+			t.Errorf("SequenceMonotonic(%v) = %+v, ожидался Skipped", seq, got)
+		}
+		if got.Passed {
+			t.Errorf("SequenceMonotonic(%v) зачтён пройденным при нехватке наблюдений", seq)
+		}
+		if got.Class != check.Guaranteed {
+			t.Errorf("класс = %q", got.Class)
+		}
 	}
 }
 
@@ -127,6 +153,26 @@ func TestReproducibleBuildIsSkippedCentralOnly(t *testing.T) {
 	}
 	if got.Detail == "" {
 		t.Error("причина пропуска не названа")
+	}
+}
+
+// TestGateChecksAreCentralOnlyAndNamed: четыре пункта qualification gate
+// «Первого сигнала» (ADR-0020), которые полигон не выполняет вовсе, обязаны
+// быть названы вслух как пропущенные central-only, а не молча отсутствовать
+// в отчёте.
+func TestGateChecksAreCentralOnlyAndNamed(t *testing.T) {
+	for _, got := range []check.Result{
+		check.ManifestSchemaConformance(),
+		check.BuildFromSHA(),
+		check.NoSecretsInImage(),
+		check.ExactDigestInDeployment(),
+	} {
+		if !got.Skipped || got.Class != check.CentralOnly {
+			t.Errorf("%q: %+v, ожидался Skipped central-only", got.Name, got)
+		}
+		if got.Detail == "" {
+			t.Errorf("%q: причина пропуска не названа", got.Name)
+		}
 	}
 }
 

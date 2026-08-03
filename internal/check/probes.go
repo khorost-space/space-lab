@@ -62,12 +62,23 @@ func Health(ctx context.Context, baseURL string) Result {
 	return Result{Name: name, Class: Guaranteed, Passed: true, Detail: "healthz и readyz отвечают 200"}
 }
 
-// SignalAccepted проверяет, что мир принимает сигналы аппарата: unknown
-// означает, что сигналов не было вовсе, и это провал, а не «пока не знаем».
-func SignalAccepted(v worldapi.View) Result {
+// SignalAccepted проверяет, что мир принял хотя бы один сигнал аппарата ЗА
+// ОКНО НАБЛЮДЕНИЯ check — а не то, что витрина когда-либо видела сигнал.
+//
+// v.Condition для этого не годится: аппарат, приславший один heartbeat и
+// зависший, оставляет condition="online" сколь угодно долго (порог сноса,
+// signal_lost, наступает только через минуту молчания) — проверка на
+// condition давала бы «пройдено» ровно в том случае, который обязана
+// ловить. seq — сигналы, увиденные ИМЕННО во время наблюдения (см. observe
+// в cmd.Check, который явно исключает сигнал, пришедший ДО его старта), и
+// судить нужно по ним, а не по текущему снимку витрины.
+func SignalAccepted(v worldapi.View, seq []int64) Result {
 	const name = "сигналы приняты миром"
-	passed := v.Condition == "online"
-	detail := fmt.Sprintf("состояние витрины: %s, последний сигнал №%d", v.Condition, v.LastSequence)
+	passed := len(seq) > 0
+	detail := fmt.Sprintf(
+		"сигналов за окно наблюдения: %d, состояние витрины: %s, последний сигнал №%d",
+		len(seq), v.Condition, v.LastSequence,
+	)
 	return Result{Name: name, Class: Guaranteed, Passed: passed, Detail: detail}
 }
 
@@ -100,6 +111,21 @@ func DigestMatches(v worldapi.View, digest string) Result {
 // студента это дефект его кода.
 func SequenceMonotonic(seq []int64) Result {
 	const name = "номера сигналов возрастают"
+	if len(seq) < 2 {
+		// Меньше двух наблюдений — возрастание попросту не из чего
+		// посчитать: последовательность из нуля или одного элемента
+		// тривиально «монотонна», и печатать ✓ здесь означало бы
+		// утверждать то, что не проверялось (та же ловушка, которую уже
+		// решает соседняя Cadence при <2 сигналах). Skip, а не провал:
+		// сам факт нехватки сигналов — забота SignalAccepted (он и ловит
+		// аппарат, замолчавший в окне наблюдения), а эта проверка обязана
+		// честно сказать «не из чего судить», а не приписать аппарату
+		// несуществующий дефект монотонности.
+		return Result{
+			Name: name, Class: Guaranteed, Skipped: true,
+			Detail: fmt.Sprintf("наблюдений за окно: %d — меньше двух, возрастание не из чего посчитать", len(seq)),
+		}
+	}
 	for i := 1; i < len(seq); i++ {
 		if seq[i] <= seq[i-1] {
 			return Result{
@@ -180,6 +206,58 @@ func ReproducibleBuild() Result {
 	return Result{
 		Name: "сборка воспроизводима побитово", Class: CentralOnly, Skipped: true,
 		Detail: "не проверяется: повторная сборка того же коммита на бете уже давала другой digest",
+	}
+}
+
+// ManifestSchemaConformance, BuildFromSHA, NoSecretsInImage и
+// ExactDigestInDeployment — central-only проверки qualification gate
+// «Первого сигнала» (ADR-0020, «Применение к работам»): весь этот gate
+// объявлен guaranteed, но полигон физически не может выполнить локально
+// именно эти четыре — у него нет ни манифеста как отдельного артефакта,
+// ни платформенного build-контейнера (образ собирает голый docker build
+// студента), ни сканера слоёв образа, ни манифеста развёртывания. ADR-0020
+// («Обязанности space-lab») требует явно перечислять такие проверки как
+// пропущенные — иначе зелёный локальный check читается как обещание того,
+// чего он не проверял. Единственная central-only проверка, которая была в
+// отчёте до этих четырёх, — ReproducibleBuild — в списке ADR-0020 не
+// числится вовсе; она остаётся отдельно и честно, но не заменяет собой
+// пункты gate.
+
+// ManifestSchemaConformance — central-only: соответствие manifest схеме
+// проверяет центральная сборка, у полигона нет отдельного manifest-артефакта.
+func ManifestSchemaConformance() Result {
+	return Result{
+		Name: "манифест соответствует схеме", Class: CentralOnly, Skipped: true,
+		Detail: "не проверяется: у полигона нет manifest как отдельного артефакта — его собирает и валидирует центральная сборка",
+	}
+}
+
+// BuildFromSHA — central-only: сборку платформой ИЗ ЗАЯВЛЕННОГО commit SHA
+// проверяет центральный build-контейнер; полигон собирает образ голым
+// docker build студента, а не тем же инструментом.
+func BuildFromSHA() Result {
+	return Result{
+		Name: "образ собран платформой из заявленного SHA", Class: CentralOnly, Skipped: true,
+		Detail: "не проверяется: полигон собирает образ обычным docker build, а не build-контейнером платформы из commit SHA",
+	}
+}
+
+// NoSecretsInImage — central-only: полигон не сканирует слои собранного
+// образа на секреты — эту проверку выполняет только центральная сборка.
+func NoSecretsInImage() Result {
+	return Result{
+		Name: "в образе нет секретов", Class: CentralOnly, Skipped: true,
+		Detail: "не проверяется: полигон не сканирует слои образа на секреты — это делает центральная сборка",
+	}
+}
+
+// ExactDigestInDeployment — central-only: точный digest в манифесте
+// развёртывания сверяет центральная сборка; полигон такого манифеста вообще
+// не формирует, у него голый docker compose студента.
+func ExactDigestInDeployment() Result {
+	return Result{
+		Name: "манифест развёртывания ссылается на точный digest", Class: CentralOnly, Skipped: true,
+		Detail: "не проверяется: полигон не формирует манифест развёртывания — этим ведает центральная сборка",
 	}
 }
 
