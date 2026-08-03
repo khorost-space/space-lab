@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -157,12 +159,64 @@ func Load(dir string) (Config, error) {
 	// KnownFields: опечатка в имени поля иначе молча даёт нулевое значение.
 	dec.KnownFields(true)
 	if err := dec.Decode(&c); err != nil {
-		return Config{}, fmt.Errorf("разобрать %s: %w", ConfigFile, err)
+		return Config{}, decodeError(err)
 	}
 	if err := c.Validate(); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", ConfigFile, err)
 	}
 	return c, nil
+}
+
+// configError — ошибка разбора конфигурации с русским текстом снаружи и
+// исходной ошибкой yaml.v3 внутри.
+//
+// Обычное fmt.Errorf("%s: %w", msg, err) не годится: %w вставляет текст
+// исходной ошибки в Error(), а она у yaml.v3 — английская и называет
+// внутренний Go-тип (project.Config), студенту это ни о чём не говорит.
+// Здесь Error() отдаёт только русский текст, а Unwrap сохраняет исходную
+// ошибку для errors.Is/errors.As и отладки.
+type configError struct {
+	msg string
+	err error
+}
+
+func (e *configError) Error() string { return e.msg }
+func (e *configError) Unwrap() error { return e.err }
+
+// unknownFieldRe вытаскивает номер строки и имя поля из сообщения вида
+// «line 18: field неизвестное_поле not found in type project.Config»,
+// которое отдаёт yaml.v3 при KnownFields(true).
+var unknownFieldRe = regexp.MustCompile(`^line (\d+): field (.+) not found in type `)
+
+// decodeError переводит ошибку yaml.Decoder в русский текст, называющий файл
+// и, по возможности, конкретную причину — неизвестное поле или синтаксис.
+func decodeError(err error) error {
+	var typeErr *yaml.TypeError
+	if errors.As(err, &typeErr) {
+		return &configError{msg: fmt.Sprintf("%s: %s", ConfigFile, describeTypeError(typeErr)), err: err}
+	}
+	return &configError{
+		msg: fmt.Sprintf("%s: не удалось разобрать YAML, проверьте синтаксис файла", ConfigFile),
+		err: err,
+	}
+}
+
+// describeTypeError переводит сообщения yaml.TypeError построчно; для
+// неизвестных полей — с номером строки и именем поля, для прочих случаев —
+// общей фразой без сырого английского текста библиотеки.
+func describeTypeError(te *yaml.TypeError) string {
+	parts := make([]string, 0, len(te.Errors))
+	for _, e := range te.Errors {
+		if m := unknownFieldRe.FindStringSubmatch(e); m != nil {
+			parts = append(parts, fmt.Sprintf("неизвестное поле %q (строка %s)", m[2], m[1]))
+			continue
+		}
+		parts = append(parts, "структура файла не совпадает с ожидаемой")
+	}
+	if len(parts) == 0 {
+		return "структура файла не совпадает с ожидаемой"
+	}
+	return strings.Join(parts, "; ")
 }
 
 // Save записывает конфигурацию в каталог проекта.

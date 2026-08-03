@@ -67,3 +67,40 @@ func TestInitDoesNotOverwriteExistingConfig(t *testing.T) {
 		t.Errorf("init затёр правки студента: ports.api = %d", got.Ports.API)
 	}
 }
+
+// TestInitDoesNotOverwriteInvalidConfig: невалидный space-lab.yaml (опечатка,
+// занятый дважды порт) — тоже не повод для «reset». Init обязан отказать и
+// оставить файл студенту на починку, а не подменить его чистыми умолчаниями.
+func TestInitDoesNotOverwriteInvalidConfig(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := project.Init(dir, "vega-0"); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	c, _ := project.Load(dir)
+	c.Ports.Gateway = c.Ports.API // Save не валидирует — так файл станет невалидным на диске.
+	if err := project.Save(dir, c); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	path := filepath.Join(dir, project.ConfigFile)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("прочитать %s: %v", project.ConfigFile, err)
+	}
+
+	_, err = project.Init(dir, "vega-0")
+	if err == nil {
+		t.Fatal("Init принял невалидный конфиг молча")
+	}
+	if !strings.Contains(err.Error(), project.ConfigFile) {
+		t.Errorf("ошибка не называет файл: %q", err)
+	}
+
+	after, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("прочитать %s после Init: %v", project.ConfigFile, readErr)
+	}
+	if string(before) != string(after) {
+		t.Errorf("Init изменил невалидный файл: было %q, стало %q", before, after)
+	}
+}

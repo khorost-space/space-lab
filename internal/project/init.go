@@ -13,6 +13,11 @@ import (
 // Идемпотентен. Существующую конфигурацию НЕ переписывает: в ней уже могли
 // быть правки студента, а «init» — не «reset». Молча затёртые порты дали бы
 // необъяснимый отказ на следующем up.
+//
+// Файл различается по наличию, а не по успеху Load: если space-lab.yaml уже
+// есть, но не читается или не проходит валидацию, это тоже НЕ повод его
+// затирать — Default() поверх такого файла спрятал бы опечатку студента под
+// чистым листом вместо того, чтобы дать её исправить.
 func Init(dir, name string) (Config, error) {
 	if err := os.MkdirAll(filepath.Join(dir, StateDir), 0o755); err != nil {
 		return Config{}, fmt.Errorf("создать %s: %w", StateDir, err)
@@ -21,9 +26,23 @@ func Init(dir, name string) (Config, error) {
 		return Config{}, err
 	}
 
-	if c, err := Load(dir); err == nil {
+	path := filepath.Join(dir, ConfigFile)
+	_, statErr := os.Stat(path)
+	switch {
+	case statErr == nil:
+		// Файл уже есть: Load решает, годится ли он, но в любом случае Init
+		// его не трогает — ни при успехе (там могут быть правки студента),
+		// ни при ошибке (студенту нужно увидеть и исправить свою строку, а
+		// не получить её обратно перетёртой умолчаниями).
+		c, loadErr := Load(dir)
+		if loadErr != nil {
+			return Config{}, fmt.Errorf("существующий %s не тронут: %w", ConfigFile, loadErr)
+		}
 		return c, nil
+	case !os.IsNotExist(statErr):
+		return Config{}, fmt.Errorf("проверить %s: %w", ConfigFile, statErr)
 	}
+
 	c := Default(name)
 	if err := Save(dir, c); err != nil {
 		return Config{}, err

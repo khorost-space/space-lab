@@ -96,3 +96,29 @@ func TestLoadRejectsUnknownField(t *testing.T) {
 		t.Fatal("неизвестное поле принято")
 	}
 }
+
+// TestLoadUnknownFieldMessageIsRussian: сообщение обязано называть файл и
+// объяснять причину по-русски, а не отдавать сырой английский текст yaml.v3
+// с внутренним именем Go-типа (project.Config), который студенту ни о чём не
+// говорит.
+func TestLoadUnknownFieldMessageIsRussian(t *testing.T) {
+	dir := t.TempDir()
+	if err := project.Save(dir, project.Default("vega-0")); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	appendLine(t, dir, "неизвестное_поле: 1")
+	_, err := project.Load(dir)
+	if err == nil {
+		t.Fatal("неизвестное поле принято")
+	}
+	got := err.Error()
+	if !strings.Contains(got, project.ConfigFile) {
+		t.Errorf("в сообщении нет имени файла: %q", got)
+	}
+	if !strings.Contains(got, "неизвестное поле") {
+		t.Errorf("в сообщении нет русского объяснения причины: %q", got)
+	}
+	if strings.Contains(got, "not found in type") || strings.Contains(got, "project.Config") {
+		t.Errorf("в сообщении остался сырой текст библиотеки: %q", got)
+	}
+}
