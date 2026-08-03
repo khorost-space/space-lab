@@ -1,0 +1,114 @@
+# Сгенерировано space-lab, руками не редактировать: правки уйдут при
+# следующем up. Настройки — в space-lab.yaml.
+name: space-lab-{{ .Cfg.Object.Name }}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: lab
+      POSTGRES_DB: khorost
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d khorost"]
+      interval: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+
+  migrate:
+    image: {{ .Cfg.Platform.Registry }}/migrate:{{ .Cfg.Platform.Version }}
+    command: ["up"]
+    environment:
+      KHOROST_STAND: local
+      KHOROST_DATABASE_URL: postgres://postgres:lab@postgres:5432/khorost?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  platform-api:
+    image: {{ .Cfg.Platform.Registry }}/platform-api:{{ .Cfg.Platform.Version }}
+    environment:
+      KHOROST_STAND: local
+      KHOROST_DATABASE_URL: postgres://postgres:lab@postgres:5432/khorost?sslmode=disable
+      KHOROST_API_TOKEN: {{ .APIToken }}
+      KHOROST_GATEWAY_TOKEN: {{ .GatewayToken }}
+      {{- if .ObjectID }}
+      KHOROST_SHOWCASE_OBJECT_ID: {{ .ObjectID }}
+      {{- end }}
+      # Порог молчания — минута: столько же, сколько на стенде. Занижать
+      # локально значило бы получать signal_lost там, где центр показал бы
+      # online, то есть расхождение вердикта на ровном месте.
+      KHOROST_RUNTIME_SIGNAL_THRESHOLD: 60s
+    ports: ["{{ .Cfg.Ports.API }}:8080"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  platform-worker:
+    image: {{ .Cfg.Platform.Registry }}/platform-worker:{{ .Cfg.Platform.Version }}
+    environment:
+      KHOROST_STAND: local
+      KHOROST_DATABASE_URL: postgres://postgres:lab@postgres:5432/khorost?sslmode=disable
+      KHOROST_RUNTIME_SIGNAL_THRESHOLD: 60s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Тег берётся из Platform.IssuerVersion, а не Platform.Version: issuer
+  # собирается из самого space-lab и версионируется отдельным циклом —
+  # версия платформы для него ничего не значит.
+  dev-issuer:
+    image: ghcr.io/khorost-space/space-lab-issuer:{{ .Cfg.Platform.IssuerVersion }}
+    environment:
+      KHOROST_ISSUER_URL: http://dev-issuer:8081
+      KHOROST_ISSUER_ADDR: ":8081"
+      KHOROST_TOKEN_NAMESPACE: {{ .Namespace }}
+      KHOROST_TOKEN_SERVICEACCOUNT: {{ .ServiceAccount }}
+    volumes:
+      - identity:/var/run/khorost/identity
+    # Порт публикуется наружу как и у остальных служб: раз в конфигурации
+    # есть Ports.Issuer, поле должно на что-то влиять, иначе проверка
+    # уникальности портов сторожит несуществующее значение.
+    ports: ["{{ .Cfg.Ports.Issuer }}:8081"]
+    healthcheck:
+      # Проба через сам бинарник, а не curl: образ на scratch, curl в нём
+      # нет. -healthcheck делает одиночный GET /healthz к себе и код выхода.
+      test: ["CMD", "/issuer", "-healthcheck"]
+      interval: 2s
+      retries: 20
+
+  student-gateway:
+    image: {{ .Cfg.Platform.Registry }}/student-gateway:{{ .Cfg.Platform.Version }}
+    environment:
+      KHOROST_STAND: local
+      KHOROST_GATEWAY_ISSUERS: http://dev-issuer:8081
+      KHOROST_GATEWAY_AUDIENCE: khorost-student-gateway
+      KHOROST_WORLD_CORE_URL: http://platform-api:8080
+      KHOROST_GATEWAY_TOKEN: {{ .GatewayToken }}
+      KHOROST_GATEWAY_BINDINGS: http://dev-issuer:8081|{{ .Namespace }}|{{ .ServiceAccount }}|{{ .ObjectID }}|local
+      KHOROST_REDIS_ADDR: redis:6379
+    ports: ["{{ .Cfg.Ports.Gateway }}:8080"]
+    depends_on:
+      dev-issuer:
+        condition: service_healthy
+
+  registry:
+    image: registry:3
+    ports: ["{{ .Cfg.Ports.Registry }}:5000"]
+
+  spacecraft:
+    image: {{ .SpacecraftImage }}
+    environment:
+      KHOROST_GATEWAY_URL: http://student-gateway:8080
+      KHOROST_RELEASE_DIGEST: {{ .SpacecraftDigest }}
+      KHOROST_HTTP_ADDR: ":{{ .Cfg.Spacecraft.HealthPort }}"
+    volumes:
+      - identity:/var/run/khorost/identity:ro
+    ports: ["{{ .Cfg.Ports.Health }}:{{ .Cfg.Spacecraft.HealthPort }}"]
+
+volumes:
+  # Права уже решены в Dockerfile.issuer: каталог лежит в образе с
+  # владельцем 65532, docker копирует владельца в том при первом
+  # монтировании (copy-up). Ни user:, ни init-контейнер здесь не нужны.
+  identity:
