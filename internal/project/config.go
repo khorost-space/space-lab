@@ -89,8 +89,22 @@ func Default(name string) Config {
 			HealthPort: 8080,
 		},
 		Platform: Platform{
-			Registry:      "ghcr.io/khorost-space",
-			Version:       "latest",
+			Registry: "ghcr.io/khorost-space",
+			// 0.0.0-7b93a281 закреплён, а не latest — ровно по той причине,
+			// которую называет докстринг Platform.Version: latest означает,
+			// что вчерашний зелёный check сегодня необъясним. Тег выбран не
+			// произвольно: именно в нём впервые появилась правка числа
+			// реплик стрима NATS (KHOROST_NATS_REPLICAS в compose.tmpl), без
+			// которой platform-worker не может создать стрим на
+			// одноузловом NATS полигона и вообще не стартует.
+			Version: "0.0.0-7b93a281",
+			// latest здесь — НЕ то же послабление, что было бы у
+			// Platform.Version. Образ issuer собирается из ЭТОГО же
+			// репозитория (Dockerfile.issuer, job image в ci.yml), и latest
+			// для него означает «версия, соответствующая этому исходнику
+			// space-lab», а не «что угодно, что собралось последним у
+			// соседей» — именно второе и есть настоящая опасность latest,
+			// от которой закреплён Platform.Version.
 			IssuerVersion: "latest",
 		},
 		Ports: Ports{API: 18080, Gateway: 18081, Health: 18082, Registry: 18083, Issuer: 18084},
