@@ -1,0 +1,56 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, Linux]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      # На self-hosted раннере HOME не задан, и Go не может вычислить GOPATH.
+      # Всё окружение Go пинится в runner temp — заодно кэш не течёт между
+      # job'ами через общий домашний каталог.
+      - name: Pin Go env to runner temp
+        run: |
+          echo "HOME=${RUNNER_TEMP}" >> "$GITHUB_ENV"
+          echo "GOPATH=${RUNNER_TEMP}/go" >> "$GITHUB_ENV"
+          echo "GOBIN=${RUNNER_TEMP}/go/bin" >> "$GITHUB_ENV"
+          echo "GOCACHE=${RUNNER_TEMP}/go-cache" >> "$GITHUB_ENV"
+          echo "GOMODCACHE=${RUNNER_TEMP}/go-modcache" >> "$GITHUB_ENV"
+          echo "${RUNNER_TEMP}/go/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Незаформатированные файлы:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      - name: test
+        run: go test ./...
+
+      - name: golangci-lint
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          golangci-lint run ./...
