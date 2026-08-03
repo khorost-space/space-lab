@@ -1,0 +1,146 @@
+package check_test
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/khorost-space/space-lab/internal/check"
+	"github.com/khorost-space/space-lab/internal/worldapi"
+)
+
+// TestDigestMatchesComparesShortForm: витрина отдаёт первые 12 символов
+// digest без префикса алгоритма — полный наружу не отдаётся. Сравнивать надо
+// ровно то, что доступно, и назвать это в тексте результата.
+func TestDigestMatchesComparesShortForm(t *testing.T) {
+	digest := "sha256:5fafbc1836491ca9e39257db28bde64f2536e12e8f671f0b6f99fe7d8585ca6b"
+	got := check.DigestMatches(worldapi.View{ServedVersion: "5fafbc183649"}, digest)
+	if !got.Passed {
+		t.Errorf("совпадающий digest не зачтён: %+v", got)
+	}
+	if got.Class != check.Guaranteed {
+		t.Errorf("класс = %q", got.Class)
+	}
+}
+
+// TestDigestMismatchIsStudentFailure: аппарат заявил не то, что развёрнуто, —
+// это цель работы 1 (корректная инъекция конфигурации), а не сбой полигона.
+func TestDigestMismatchIsStudentFailure(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	if check.DigestMatches(worldapi.View{ServedVersion: "5fafbc183649"}, digest).Passed {
+		t.Error("расхождение digest зачтено")
+	}
+}
+
+// TestSignalAcceptedRequiresOnline: unknown означает, что сигналов не было
+// вовсе, и это провал, а не «пока не знаем».
+func TestSignalAcceptedRequiresOnline(t *testing.T) {
+	if check.SignalAccepted(worldapi.View{Condition: "unknown"}).Passed {
+		t.Error("отсутствие сигналов зачтено")
+	}
+	if !check.SignalAccepted(worldapi.View{Condition: "online", LastSequence: 3}).Passed {
+		t.Error("online не зачтён")
+	}
+}
+
+// TestSequenceMonotonic: не возрастающий sequence на связи мир игнорирует
+// идемпотентно, но для студента это дефект его кода.
+func TestSequenceMonotonic(t *testing.T) {
+	if !check.SequenceMonotonic([]int64{1, 2, 3}).Passed {
+		t.Error("возрастающая последовательность не зачтена")
+	}
+	if check.SequenceMonotonic([]int64{3, 2}).Passed {
+		t.Error("убывающая последовательность зачтена")
+	}
+}
+
+// TestNonRootRejectsRootAndEmpty: пустой User в конфигурации образа означает
+// root — Dockerfile просто не сказал обратного.
+func TestNonRootRejectsRootAndEmpty(t *testing.T) {
+	for _, user := range []string{"", "root", "0", "0:0"} {
+		if check.NonRoot(user).Passed {
+			t.Errorf("User=%q зачтён как non-root", user)
+		}
+	}
+	if !check.NonRoot("65532:65532").Passed {
+		t.Error("числовой uid не зачтён")
+	}
+}
+
+// TestCadenceIsEnvironmentDependent: проверка зависит от тайминга и
+// планировщика, а условие класса guaranteed требует независимости от них.
+func TestCadenceIsEnvironmentDependent(t *testing.T) {
+	base := time.Now()
+	seen := []time.Time{base, base.Add(15 * time.Second), base.Add(30 * time.Second)}
+	got := check.Cadence(seen)
+	if got.Class != check.EnvironmentDependent {
+		t.Errorf("класс = %q, ожидался environment-dependent", got.Class)
+	}
+	if !got.Passed {
+		t.Errorf("ровная каденция 15 с не зачтена: %+v", got)
+	}
+	if check.Cadence([]time.Time{base, base.Add(40 * time.Second)}).Passed {
+		t.Error("интервал 40 с зачтён как каденция 15 с")
+	}
+}
+
+// TestReproducibleBuildIsSkippedCentralOnly: повторная сборка того же коммита
+// на бете дала ДРУГОЙ digest — воспроизводимости нет даже у сборки самой
+// платформы, и обещать её локально было бы неправдой.
+func TestReproducibleBuildIsSkippedCentralOnly(t *testing.T) {
+	got := check.ReproducibleBuild()
+	if !got.Skipped || got.Class != check.CentralOnly {
+		t.Errorf("проверка воспроизводимости: %+v", got)
+	}
+	if got.Detail == "" {
+		t.Error("причина пропуска не названа")
+	}
+}
+
+// TestGracefulShutdownWantsCleanExitInTime: аппарат, убитый по таймауту,
+// теряет незавершённую работу при каждом раскате.
+func TestGracefulShutdownWantsCleanExitInTime(t *testing.T) {
+	if !check.GracefulShutdown(0, 2*time.Second, 10*time.Second).Passed {
+		t.Error("чистое завершение за 2 с не зачтено")
+	}
+	if check.GracefulShutdown(137, 10*time.Second, 10*time.Second).Passed {
+		t.Error("убийство по таймауту (137) зачтено")
+	}
+}
+
+// TestHealthRequiresBothProbesOK: readinessProbe платформы живёт ровно тем
+// же путём, что и здесь — расхождение обязано быть дефектом аппарата, а не
+// полигона.
+func TestHealthRequiresBothProbesOK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	got := check.Health(t.Context(), srv.URL)
+	if !got.Passed {
+		t.Errorf("оба probe вернули 200, но результат не зачтён: %+v", got)
+	}
+	if got.Class != check.Guaranteed {
+		t.Errorf("класс = %q", got.Class)
+	}
+}
+
+// TestHealthFailsWhenReadyzNotOK: /healthz может быть готов раньше /readyz —
+// зачитывать успех по одному из двух путей нельзя.
+func TestHealthFailsWhenReadyzNotOK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/readyz" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	if check.Health(t.Context(), srv.URL).Passed {
+		t.Error("readyz вернул не-200, но результат зачтён успешным")
+	}
+}

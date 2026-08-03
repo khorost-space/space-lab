@@ -29,10 +29,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "status":
 		return runStatus(args[1:], stdout, stderr)
 	case "check":
-		// Ошибка записи в stderr не проверяется: если он уже недоступен,
-		// исправлять это здесь всё равно нечем — код возврата важнее.
-		_, _ = fmt.Fprintf(stderr, "space-lab: команда %q ещё не реализована\n", args[0])
-		return 1
+		return runCheck(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "space-lab: неизвестная команда %q\n\n", args[0])
 		usage(stderr)
@@ -127,6 +124,28 @@ func runStatus(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if err := cmd.Status(context.Background(), dir, stdout); err != nil {
+		_, _ = fmt.Fprintf(stderr, "space-lab: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// runCheck разбирает флаги «check» (их нет) и запускает cmd.Check в текущем
+// каталоге. Ненулевой код возврата означает провал результата класса
+// guaranteed (ADR-0020) — провал environment-dependent его не меняет.
+func runCheck(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("check", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	dir, err := os.Getwd()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "space-lab: узнать текущий каталог: %v\n", err)
+		return 1
+	}
+	if err := cmd.Check(context.Background(), dir, stdout); err != nil {
 		_, _ = fmt.Fprintf(stderr, "space-lab: %v\n", err)
 		return 1
 	}
