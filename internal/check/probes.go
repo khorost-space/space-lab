@@ -28,6 +28,14 @@ const digestShortLen = 12
 // probeTimeout — таймаут одиночного HTTP-запроса пробы Health.
 const probeTimeout = 5 * time.Second
 
+// GracefulShutdownName — имя результата GracefulShutdown.
+//
+// Экспортировано: cmd.Check собирает результат вручную, когда сам
+// dockerx.StopAndWait отказал (аппарат не удалось даже остановить) — и без
+// общей константы название разъехалось бы при первой же правке одного из
+// двух мест.
+const GracefulShutdownName = "аппарат завершается штатно и укладывается в лимит"
+
 // Health опрашивает GET /healthz и GET /readyz по адресу аппарата и зачитывает
 // только код 200 у обоих: это ровно то, чем живёт readinessProbe платформы, и
 // расхождение здесь — дефект аппарата, который увидит и центральная сборка.
@@ -108,14 +116,32 @@ func SequenceMonotonic(seq []int64) Result {
 // просто не сказал обратного.
 func NonRoot(user string) Result {
 	const name = "аппарат запускается не от root"
-	trimmed := strings.TrimSpace(user)
-	uid := trimmed
-	if i := strings.IndexByte(trimmed, ':'); i >= 0 {
-		uid = trimmed[:i]
-	}
-	passed := trimmed != "" && trimmed != "root" && uid != "0"
 	detail := fmt.Sprintf("Config.User образа: %q", user)
-	return Result{Name: name, Class: Guaranteed, Passed: passed, Detail: detail}
+	return Result{Name: name, Class: Guaranteed, Passed: nonRootPassed(user), Detail: detail}
+}
+
+// nonRootPassed разбирает Config.User образа (форма uid[:gid], сегменты
+// могут быть числами или именами) и признаёт root по ЛЮБОМУ сегменту —
+// числом 0 или именем root: «root:0», «0:root» и «root:root» — такой же
+// root, как голое «root» или «0».
+//
+// Форму, которую разобрать нельзя (не 1 и не 2 сегмента, пустой сегмент),
+// трактуем в строгую сторону — как провал, а не как пройденную проверку:
+// обратное умолчание тихо пропустило бы ровно то, что проверка обязана
+// ловить, а это проверка класса guaranteed — расхождение с центром здесь
+// цена дефекта платформы, а не студента.
+func nonRootPassed(user string) bool {
+	trimmed := strings.TrimSpace(user)
+	segments := strings.Split(trimmed, ":")
+	if len(segments) > 2 {
+		return false
+	}
+	for _, seg := range segments {
+		if seg == "" || seg == "0" || seg == "root" {
+			return false
+		}
+	}
+	return true
 }
 
 // Cadence проверяет, что интервалы между сигналами близки к 15 секундам
@@ -161,8 +187,7 @@ func ReproducibleBuild() Result {
 // отведённый лимит: убитый по таймауту аппарат теряет незавершённую работу
 // при каждом раскате.
 func GracefulShutdown(exitCode int, elapsed, limit time.Duration) Result {
-	const name = "аппарат завершается штатно и укладывается в лимит"
 	passed := exitCode == 0 && elapsed <= limit
 	detail := fmt.Sprintf("код выхода %d, остановка заняла %s из %s лимита", exitCode, elapsed, limit)
-	return Result{Name: name, Class: Guaranteed, Passed: passed, Detail: detail}
+	return Result{Name: GracefulShutdownName, Class: Guaranteed, Passed: passed, Detail: detail}
 }

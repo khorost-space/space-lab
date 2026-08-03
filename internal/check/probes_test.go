@@ -69,6 +69,37 @@ func TestNonRootRejectsRootAndEmpty(t *testing.T) {
 	}
 }
 
+// TestNonRootRejectsRootByAnySegment: root узнаётся по ЛЮБОМУ сегменту —
+// именем root или числом 0, — а не только по строке целиком. Проверка
+// класса guaranteed: образ, реально работающий от root, обязан провалить её
+// локально ровно так же, как централизованно, а «root:root», «root:0» и
+// «0:root» — такой же root, как голое «root».
+func TestNonRootRejectsRootByAnySegment(t *testing.T) {
+	for _, user := range []string{"root:root", "root:0", "0:root", ":root", "root:"} {
+		if check.NonRoot(user).Passed {
+			t.Errorf("User=%q (root по сегменту) зачтён как non-root", user)
+		}
+	}
+}
+
+// TestNonRootFailsClosedOnUnparseableForm: форму, которую нельзя разобрать
+// (больше двух сегментов), проверка трактует в строгую сторону — как
+// провал, а не как пройденную: обратное умолчание тихо пропустило бы ровно
+// то, что эта проверка обязана ловить.
+func TestNonRootFailsClosedOnUnparseableForm(t *testing.T) {
+	if check.NonRoot("65532:65532:extra").Passed {
+		t.Error("неразбираемая форма User зачтена как non-root")
+	}
+}
+
+// TestNonRootAcceptsBareUID: форма без группы, не совпадающая с root/0, —
+// обычный некорневой пользователь.
+func TestNonRootAcceptsBareUID(t *testing.T) {
+	if !check.NonRoot("65532").Passed {
+		t.Error("голый некорневой uid не зачтён")
+	}
+}
+
 // TestCadenceIsEnvironmentDependent: проверка зависит от тайминга и
 // планировщика, а условие класса guaranteed требует независимости от них.
 func TestCadenceIsEnvironmentDependent(t *testing.T) {

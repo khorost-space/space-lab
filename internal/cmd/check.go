@@ -151,7 +151,7 @@ func Check(ctx context.Context, dir string, stdout io.Writer) error {
 	exitCode, elapsed, stopErr := dockerx.StopAndWait(ctx, dir, spacecraftService, shutdownTimeout)
 	if stopErr != nil {
 		results = append(results, check.Result{
-			Name: "аппарат завершается штатно и укладывается в лимит", Class: check.Guaranteed,
+			Name: check.GracefulShutdownName, Class: check.Guaranteed,
 			Detail: fmt.Sprintf("остановить аппарат: %v", stopErr),
 		})
 	} else {
