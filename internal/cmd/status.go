@@ -18,13 +18,17 @@ import (
 // задача check из шага 10), а прямой пересказ витрины, единственного места,
 // где студент видит вердикт мира о своём аппарате.
 func FormatStatus(v worldapi.View) string {
-	seen := "сигналов не было"
+	// Номер сигнала печатается только вместе с реальным сигналом: LastSeen
+	// nil честно значит «сигналов не было», а LastSequence в этом случае —
+	// нулевое значение поля, а не номер чего-либо. «№0, сигналов не было»
+	// выглядело бы как сигнал №0, которого на самом деле не существует.
+	last := "сигналов не было"
 	if v.LastSeen != nil {
-		seen = v.LastSeen.Format(time.RFC3339)
+		last = fmt.Sprintf("№%d, %s", v.LastSequence, v.LastSeen.Format(time.RFC3339))
 	}
 	return fmt.Sprintf(
-		"Объект:  %s\nСостояние: %s\nПоследний сигнал: №%d, %s\nВерсия образа: %s\n",
-		v.Name, v.Condition, v.LastSequence, seen, v.ServedVersion,
+		"Объект:  %s\nСостояние: %s\nПоследний сигнал: %s\nВерсия образа: %s\n",
+		v.Name, v.Condition, last, v.ServedVersion,
 	)
 }
 

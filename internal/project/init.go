@@ -19,7 +19,11 @@ import (
 // затирать — Default() поверх такого файла спрятал бы опечатку студента под
 // чистым листом вместо того, чтобы дать её исправить.
 func Init(dir, name string) (Config, error) {
-	if err := os.MkdirAll(filepath.Join(dir, StateDir), 0o755); err != nil {
+	// 0o700, а не 0o644/0o755: внутри .space-lab/ лежат API-токен, токен
+	// Gateway и ключ подписи dev-issuer открытым текстом (см. Write в
+	// stack/compose.go и ensureGitignore ниже) — читать и заходить в
+	// каталог должен только сам студент.
+	if err := os.MkdirAll(filepath.Join(dir, StateDir), 0o700); err != nil {
 		return Config{}, fmt.Errorf("создать %s: %w", StateDir, err)
 	}
 	if err := ensureGitignore(dir); err != nil {
