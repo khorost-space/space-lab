@@ -113,7 +113,12 @@ services:
       KHOROST_GATEWAY_AUDIENCE: khorost-student-gateway
       KHOROST_WORLD_CORE_URL: http://platform-api:8080
       KHOROST_GATEWAY_TOKEN: {{ .GatewayToken }}
+      {{- if .ObjectID }}
+      # Пустое отображение лучше отображения с пустым полем: до второй
+      # фазы object_id не существует (его выдаёт платформа), а служба на
+      # первой фазе всё равно не поднимается — писать сюда нечего.
       KHOROST_GATEWAY_BINDINGS: http://dev-issuer:8081|{{ .Namespace }}|{{ .ServiceAccount }}|{{ .ObjectID }}|local
+      {{- end }}
       # Имя переменной — KHOROST_REDIS_URL: loadRedisConfig платформы читает
       # именно его, KHOROST_REDIS_ADDR она не знает вовсе и откажет в
       # старте с «настройки Redis не заданы», хотя значение подставлено.

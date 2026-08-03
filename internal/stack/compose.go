@@ -50,10 +50,16 @@ var composeTmpl string
 var tmpl = template.Must(template.New("compose").Parse(composeTmpl))
 
 // Render собирает docker-compose.yaml из Params.
+//
+// Пустой ObjectID — не ошибка: подъём двухфазный именно потому, что
+// object_id выдаёт платформа (UUIDv7, ADR-0004), и до подъёма platform-api
+// на первой фазе его попросту не существует. Требовать его здесь значило
+// бы требовать невозможного и разорвать сам подъём: файл для первой фазы
+// нечем было бы отрендерить. Строки, которым ObjectID нужен
+// (KHOROST_SHOWCASE_OBJECT_ID, KHOROST_GATEWAY_BINDINGS), при пустом
+// значении просто не пишутся — тем же приёмом, каким это уже сделано в
+// шаблоне для витрины.
 func Render(p Params) ([]byte, error) {
-	if err := validate(p); err != nil {
-		return nil, err
-	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, p); err != nil {
 		return nil, fmt.Errorf("отрендерить compose: %w", err)
@@ -61,14 +67,17 @@ func Render(p Params) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// validate проверяет то, что шаблон молча проглотил бы пустым значением.
+// RequireObjectIDForPhaseTwo проверяет, что ObjectID задан, прежде чем
+// поднимать службы второй фазы (dev-issuer, student-gateway, spacecraft).
 //
-// KHOROST_SHOWCASE_OBJECT_ID в шаблоне защищён условием и просто исчезает
-// при пустом ObjectID, а KHOROST_GATEWAY_BINDINGS подставляет его
-// безусловно — без явной проверки здесь пустой ObjectID дал бы
-// отображение с пустым полем и молчаливый отказ Gateway при первом
-// сигнале, вместо понятной ошибки на этапе генерации.
-func validate(p Params) error {
+// На первой фазе (postgres, redis, migrate, platform-api, platform-worker)
+// пустой ObjectID — нормальный порядок вещей: платформа ещё не выдала
+// идентификатор. Но перед второй фазой он обязан быть — иначе
+// KHOROST_GATEWAY_BINDINGS не смонтируется в compose вовсе, и Gateway
+// откажет со своей стороны без объяснимой причины. Эту проверку вызывает
+// команда up непосредственно перед подъёмом второй фазы, когда пустой
+// ObjectID уже означает дефект, а не ожидаемое состояние.
+func RequireObjectIDForPhaseTwo(p Params) error {
 	if p.ObjectID == "" {
 		return errors.New(
 			"object_id не задан: службы второй фазы (dev-issuer, student-gateway, " +

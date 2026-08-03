@@ -161,15 +161,43 @@ func TestSpacecraftWaitsForIssuer(t *testing.T) {
 	}
 }
 
-// TestRenderRequiresObjectID: KHOROST_GATEWAY_BINDINGS подставляет ObjectID
-// безусловно — пустое значение дало бы отображение с пустым полем и
-// молчаливый отказ Gateway при первом сигнале. Render обязан отказать явно
-// на этапе генерации, а не переносить проблему в рантайм стека.
-func TestRenderRequiresObjectID(t *testing.T) {
+// TestRenderAllowsEmptyObjectIDForPhaseOne: подъём двухфазный именно
+// потому, что object_id выдаёт платформа — на момент первой фазы (когда
+// поднимается сам platform-api) его ещё не существует. Render обязан
+// отрендерить валидный файл и без него, иначе первую фазу нечем поднимать.
+// Строки, которым ObjectID нужен, при этом просто не пишутся.
+func TestRenderAllowsEmptyObjectIDForPhaseOne(t *testing.T) {
 	p := params()
 	p.ObjectID = ""
-	_, err := stack.Render(p)
-	if err == nil {
-		t.Fatal("Render с пустым ObjectID обязан вернуть ошибку")
+	raw, err := stack.Render(p)
+	if err != nil {
+		t.Fatalf("Render с пустым ObjectID обязан отработать без ошибки: %v", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("сгенерирован невалидный YAML: %v\n%s", err, raw)
+	}
+	if strings.Contains(string(raw), "KHOROST_GATEWAY_BINDINGS") {
+		t.Error("в compose есть KHOROST_GATEWAY_BINDINGS при пустом ObjectID")
+	}
+	if strings.Contains(string(raw), "KHOROST_SHOWCASE_OBJECT_ID") {
+		t.Error("в compose есть KHOROST_SHOWCASE_OBJECT_ID при пустом ObjectID")
+	}
+}
+
+// TestRequireObjectIDForPhaseTwo: команда up вызывает эту проверку
+// непосредственно перед подъёмом второй фазы (dev-issuer, student-gateway,
+// spacecraft) — там пустой ObjectID уже означает дефект, а не нормальный
+// порядок вещей, как на первой фазе.
+func TestRequireObjectIDForPhaseTwo(t *testing.T) {
+	p := params()
+	p.ObjectID = ""
+	if err := stack.RequireObjectIDForPhaseTwo(p); err == nil {
+		t.Fatal("RequireObjectIDForPhaseTwo с пустым ObjectID обязана вернуть ошибку")
+	}
+
+	p.ObjectID = "019f7f3a-127c-7b25-a8d3-e049ffbba58f"
+	if err := stack.RequireObjectIDForPhaseTwo(p); err != nil {
+		t.Fatalf("RequireObjectIDForPhaseTwo с заданным ObjectID: %v", err)
 	}
 }
